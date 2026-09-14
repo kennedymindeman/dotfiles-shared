@@ -241,7 +241,7 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
 
     def test_work_rejects_home_only_overlay(self):
-        with self.assertRaisesRegex(ValueError, "profiles/work.json"):
+        with self.assertRaisesRegex(ValueError, r"profiles[/\\]work\.json"):
             self.plan("work", self.overlay)
         self.assertEqual(self.snapshot(), {})
 
@@ -269,7 +269,7 @@ class LinkTests(unittest.TestCase):
         first, second = self.work_overlay(), self.work_overlay("replacement")
         self.apply("work", first, dry=True)
         self.assertEqual(self.snapshot(), {})
-        with self.assertRaisesRegex(ValueError, "profiles/home.json"):
+        with self.assertRaisesRegex(ValueError, r"profiles[/\\]home\.json"):
             self.apply("home", first)
         self.apply("work", first)
         self.assertIn("Follow employer rules", (self.home / "AGENTS.md").read_text())
