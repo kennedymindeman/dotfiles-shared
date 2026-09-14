@@ -1,0 +1,17 @@
+# repositoryRules
+Follow the employer's repository instructions, review process, and approved tools. Use the repository's existing issue tracker and documentation conventions.
+
+# authorization
+Commit, publish, merge, deploy, or change tickets only when explicitly authorized for the task. Use only approved accounts and destinations for work data. Ask before enabling external notifications, history sync, or services.
+
+# completion
+Run the required checks and report their output. Inspect tracked changes, untracked files, stashes, linked worktrees, and unpublished commits in each checkout used. Preserve unrelated work and state what remains to resume.
+
+# credentials
+Keep work identity and credentials in machine-local configuration or the employer's credential manager.
+
+# delegation
+When delegation is available and authorized, give each agent a bounded task. Send reviewers the artifact and acceptance criteria without expected findings.
+
+# deliverables
+Save reports and other deliverables in the repository's approved location. Provide the local path or an approved internal link.

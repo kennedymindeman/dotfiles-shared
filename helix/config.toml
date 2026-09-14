@@ -1,0 +1,20 @@
+theme = "catppuccin_mocha"
+
+[editor]
+line-number = "relative"
+cursorline = true
+# Color the statusline mode indicator differently per mode (normal/insert/select)
+color-modes = true
+# Show open buffers as tabs when more than one is open
+bufferline = "multiple"
+
+[editor.cursor-shape]
+insert = "bar"
+select = "underline"
+
+[editor.file-picker]
+# Show hidden files in the picker (still respects .gitignore)
+hidden = false
+
+[editor.indent-guides]
+render = true

@@ -1,0 +1,16 @@
+{
+  "files": {
+    ".config/dotfiles/check-copilot-policy.py": "bin/check-copilot-policy.py",
+    ".config/starship.toml": "starship.toml",
+    ".config/helix/config.toml": "helix/config.toml",
+    ".config/pudb/pudb.cfg": "pudb/pudb.cfg",
+    ".config/pudb/catppuccin-mocha.py": "pudb/catppuccin-mocha.py"
+  },
+  "unix": {
+    ".config/copilot-shell-defaults.sh": "copilot/shell-defaults.sh"
+  },
+  "windows": {},
+  "darwin": {
+    "Library/Application Support/com.mitchellh.ghostty/config": "ghostty/config"
+  }
+}

@@ -1,0 +1,72 @@
+"$schema" = 'https://starship.rs/config-schema.json'
+
+format = """
+$username\
+${env_var.MACHINE_NAME}\
+$directory\
+$git_branch\
+$git_state\
+$git_status\
+$cmd_duration\
+$jobs\
+$line_break\
+$python\
+$status\
+$character"""
+
+# The shell resolves MACHINE_NAME from an explicit environment value, then
+# ~/.machine-name, then the system hostname.
+[env_var.MACHINE_NAME]
+format = "[$env_value]($style) "
+style = "green"
+
+[directory]
+style = "blue"
+
+[character]
+success_symbol = "[❯](purple)"
+error_symbol = "[❯](red)"
+vimcmd_symbol = "[❮](green)"
+
+[git_branch]
+format = "[$branch]($style)"
+style = "bright-black"
+
+[git_status]
+format = "[[(*$conflicted$untracked$modified$staged$renamed$deleted)](218) ($ahead_behind$stashed)]($style)"
+style = "cyan"
+conflicted = "​"
+untracked = "​"
+modified = "​"
+staged = "​"
+renamed = "​"
+deleted = "​"
+stashed = "≡"
+
+[git_state]
+format = '\([$state( $progress_current/$progress_total)]($style)\) '
+style = "bright-black"
+
+[cmd_duration]
+format = "[$duration]($style) "
+style = "yellow"
+
+[python]
+format = "[$virtualenv]($style) "
+style = "bright-black"
+detect_extensions = []
+detect_files = []
+
+# Exact exit code, not just the red ❯. Shows ONLY on failure, so no noise on
+# success — tells you WHICH failure (1 vs 127 "not found" vs 130 "^C").
+[status]
+disabled = false
+format = "[$status]($style) "
+style = "red"
+
+# A marker when you have backgrounded/suspended (Ctrl-Z) jobs, so they don't get
+# forgotten. Shows ONLY when jobs exist. Pairs with the shell-line-editing card.
+[jobs]
+format = "[$symbol$number]($style) "
+symbol = "✦ "
+style = "bright-black"
