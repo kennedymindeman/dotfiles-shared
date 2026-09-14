@@ -4,6 +4,12 @@ Prefer minimal solutions: YAGNI, stdlib first, shortest working diff. No unreque
 # evidenceBeforeFix
 When debugging, produce evidence for the diagnosis — a failing test, instrumentation, a log excerpt — before changing code; when you say it's done, show the check's output.
 
+# completion
+Run the required checks and report their output. Inspect tracked changes, untracked files, stashes, linked worktrees, and unpublished commits in each checkout used. Preserve unrelated work and state what remains to resume.
+
+# blindReview
+Give reviewers the artifact and acceptance criteria without expected findings.
+
 # reviewEvidence
 For changed interactions, record a short passing flow. For layout changes, compare screenshots at the same viewport. For backend work, retain the relevant test output. Identify the tested commit, any uncommitted changes, and whether the run used synthetic or live data. Keep videos and traces in the approved artifact location, link them from the review, and keep source history in Git. Re-record affected behavior when its code changes.
 

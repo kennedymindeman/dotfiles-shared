@@ -77,10 +77,6 @@ if command -v fd >/dev/null; then
   export FZF_ALT_C_COMMAND='fd --type d --hidden --exclude .git'
 fi
 
-if [[ ${DOTFILES_ENV:-} == home && -f "$HOME/.config/dotfiles/zshrc.home" ]]; then
-  source "$HOME/.config/dotfiles/zshrc.home"
-fi
-
 # git, crontab, and anything else that respects the convention opens nvim
 if command -v nvim >/dev/null; then
   export EDITOR=nvim

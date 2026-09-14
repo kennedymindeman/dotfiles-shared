@@ -3,6 +3,8 @@ import importlib.util
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -35,6 +37,8 @@ class LinkTests(unittest.TestCase):
             "agents/work.md": "Follow employer rules.\n",
             "copilot/copilot-instructions.md": "Write clearly.\n",
             "zshrc": "# shared shell\n",
+            "copilot/shell-defaults.sh": "# shared launcher\n",
+            "powershell/Microsoft.PowerShell_profile.ps1": "# shared shell\n",
             "tmux.conf": "# shared tmux\n",
         }.items():
             self.write(self.repo / name, content)
@@ -76,7 +80,7 @@ class LinkTests(unittest.TestCase):
 
     def snapshot(self):
         return {
-            str(p.relative_to(self.home)): ("link", os.readlink(p))
+            p.relative_to(self.home).as_posix(): ("link", os.readlink(p))
             if p.is_symlink()
             else ("file", p.read_bytes())
             for p in self.home.rglob("*")
@@ -236,10 +240,167 @@ class LinkTests(unittest.TestCase):
             self.apply("work")
         self.assertEqual(before, self.snapshot())
 
-    def test_work_rejects_private_overlay(self):
-        with self.assertRaisesRegex(ValueError, "private overlays require"):
+    def test_work_rejects_home_only_overlay(self):
+        with self.assertRaisesRegex(ValueError, "profiles/work.json"):
             self.plan("work", self.overlay)
         self.assertEqual(self.snapshot(), {})
+
+    def work_overlay(self, name="work-overlay"):
+        overlay = self.base / name
+        for relative, content in {
+            "profiles/work.json": json.dumps(
+                {"files": {".config/work.txt": "work.txt"}}
+            ),
+            "work.txt": name + " configuration\n",
+            "agents/work.md": name + " instructions\n",
+            "gitconfig.work": "[user]\n\tname = Example Developer\n",
+            "zshrc.work": "export OVERLAY_TEST=" + name + "\n",
+            "bashrc.work": "export OVERLAY_TEST=" + name + "\n",
+            "tmux.work.conf": "# work tmux\n",
+            "powershell/profile.work.ps1": "$env:OVERLAY_TEST = '" + name + "'\n",
+            # The selected profile must never fall back to these files.
+            "agents/home.md": "UNSELECTED HOME INSTRUCTIONS\n",
+            "gitconfig.home": "[user]\n\tname = Unselected Home\n",
+        }.items():
+            self.write(overlay / relative, content)
+        return overlay
+
+    def test_work_overlay_fresh_repeat_switch_and_removal(self):
+        first, second = self.work_overlay(), self.work_overlay("replacement")
+        self.apply("work", first, dry=True)
+        self.assertEqual(self.snapshot(), {})
+        with self.assertRaisesRegex(ValueError, "profiles/home.json"):
+            self.apply("home", first)
+        self.apply("work", first)
+        self.assertIn("Follow employer rules", (self.home / "AGENTS.md").read_text())
+        self.assertIn("work-overlay instructions", (self.home / "AGENTS.md").read_text())
+        self.assertNotIn("UNSELECTED HOME", (self.home / "AGENTS.md").read_text())
+        self.assertIn("gitconfig.work", (self.home / ".gitconfig").read_text())
+        self.assertNotIn("gitconfig.home", (self.home / ".gitconfig").read_text())
+        self.assertEqual((self.home / ".config/work.txt").read_text(), "work-overlay configuration\n")
+        before = self.snapshot()
+        self.apply("work", first)
+        self.assertEqual(before, self.snapshot())
+        self.apply("work", second)
+        self.assertNotIn("work-overlay instructions", (self.home / "AGENTS.md").read_text())
+        self.assertIn("replacement instructions", (self.home / "AGENTS.md").read_text())
+        self.assertEqual((self.home / ".config/work.txt").read_text(), "replacement configuration\n")
+        self.apply("work")
+        self.assertFalse((self.home / ".config/work.txt").exists())
+        state = json.loads((self.home / ".config/dotfiles/state.json").read_text())
+        self.assertNotIn("overlay", state)
+        for path, content in self.snapshot().items():
+            if "/backups/" not in path:
+                self.assertNotIn(str(second), str(content), path)
+        before = self.snapshot()
+        self.apply("work")
+        self.assertEqual(before, self.snapshot())
+
+    def test_home_to_work_overlay_removes_personal_state(self):
+        work = self.work_overlay()
+        self.apply("home", self.overlay)
+        before = self.snapshot()
+        self.apply("home", self.overlay)
+        self.assertEqual(before, self.snapshot())
+        self.apply("work", work)
+        self.assertFalse((self.home / ".config/private.txt").exists())
+        for path, content in self.snapshot().items():
+            if "/backups/" not in path:
+                self.assertNotIn(str(self.overlay), str(content), path)
+                self.assertNotIn("Personal automation", str(content), path)
+                self.assertNotIn("personal-model", str(content), path)
+        settings = json.loads((self.home / ".copilot/settings.json").read_text())
+        self.assertTrue(settings["sandbox"]["enabled"])
+        self.assertEqual((self.home / ".dotfiles-env").read_text(), "work\n")
+        self.apply("home", self.overlay)
+        self.assertFalse((self.home / ".config/work.txt").exists())
+        self.assertNotIn("work-overlay instructions", (self.home / "AGENTS.md").read_text())
+        self.assertIn("Personal automation", (self.home / "AGENTS.md").read_text())
+
+    def test_overlay_can_omit_all_optional_files(self):
+        overlay = self.base / "empty-work"
+        self.write(overlay / "profiles/work.json", "{}")
+        self.apply("work", overlay)
+        self.assertNotIn("gitconfig.work", (self.home / ".gitconfig").read_text())
+        self.assertIn("Follow employer rules", (self.home / "AGENTS.md").read_text())
+
+    def test_overlay_cannot_replace_shared_or_generated_configuration(self):
+        overlay = self.work_overlay()
+        for relative in (
+            ".config/shared.txt", ".gitconfig", ".dotfiles-env",
+            ".config/dotfiles/state.json", ".copilot/settings.json",
+            ".config", ".", ".config/shared.txt/child",
+            ".config/dotfiles/backups/extra.txt",
+        ):
+            with self.subTest(relative=relative):
+                self.write(overlay / "profiles/work.json", json.dumps({"files": {relative: "work.txt"}}))
+                with self.assertRaisesRegex(ValueError, "reserved|already configured|invalid installation"):
+                    self.apply("work", overlay)
+                self.assertEqual(self.snapshot(), {})
+
+    def test_overlay_switch_requires_review_of_external_startup_reference(self):
+        overlay = self.work_overlay()
+        self.apply("work", overlay)
+        self.write(self.home / ".zprofile", f'source "{overlay}/external.zsh"\n')
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "remaining reference"):
+            self.apply("work", self.work_overlay("replacement"))
+        self.assertEqual(before, self.snapshot())
+
+    def test_retained_work_overlay_reference_does_not_block_relink(self):
+        overlay = self.work_overlay()
+        self.apply("work", overlay)
+        target = self.home / ".gitconfig"
+        target.write_text(target.read_text() + "\n# " + str(overlay) + "\n")
+        self.apply("work", overlay)
+        with self.assertRaisesRegex(ValueError, "remaining reference"):
+            self.apply("work")
+
+    def test_profile_switch_in_same_overlay_reviews_external_startup(self):
+        overlay = self.work_overlay()
+        self.write(overlay / "profiles/home.json", "{}")
+        self.apply("work", overlay)
+        self.write(self.home / ".zprofile", f'source "{overlay}/zshrc.work"\n')
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "remaining reference"):
+            self.apply("home", overlay)
+        self.assertEqual(before, self.snapshot())
+
+    def test_shell_additions_follow_selected_profile_on_both_platforms(self):
+        overlay = self.work_overlay()
+        # The CI matrix executes this with native paths and file semantics on each OS.
+        self.apply("work", overlay)
+        if os.name == "nt":
+            target = self.home / "Documents/PowerShell/profile.ps1"
+            self.assertIn("profile.work.ps1", target.read_text())
+            self.assertIn("DOTFILES_PRIVATE_DIR", target.read_text())
+            self.assertFalse((self.home / ".config/work.txt").is_symlink())
+        else:
+            for name in (".zshrc", ".bashrc"):
+                self.assertIn(name[1:] + ".work", (self.home / name).read_text())
+            self.assertIn("tmux.work.conf", (self.home / ".tmux.conf").read_text())
+            target = self.home / ".zshrc"
+        self.apply("work")
+        self.assertNotIn(str(overlay), target.read_text())
+        self.assertIn("DOTFILES_PRIVATE_DIR", target.read_text())
+
+    def test_native_shell_loads_selected_overlay_and_clears_removed_path(self):
+        overlay = self.work_overlay()
+        self.apply("work", overlay)
+        environment = dict(os.environ, DOTFILES_PRIVATE_DIR="stale-overlay")
+        environment.pop("OVERLAY_TEST", None)
+        if os.name == "nt":
+            shell = shutil.which("pwsh")
+            self.assertIsNotNone(shell, "PowerShell 7 is required for the Windows setup tests")
+            target = str(self.home / "Documents/PowerShell/profile.ps1").replace("'", "''")
+            command = [shell, "-NoProfile", "-Command", f". '{target}'; Write-Output \"$env:DOTFILES_ENV|$env:DOTFILES_PRIVATE_DIR|$env:OVERLAY_TEST\""]
+        else:
+            command = ["bash", "--noprofile", "--norc", "-c", '. "$1"; printf "%s|%s|%s\\n" "$DOTFILES_ENV" "$DOTFILES_PRIVATE_DIR" "$OVERLAY_TEST"', "test", str(self.home / ".bashrc")]
+        result = subprocess.run(command, env=environment, capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.strip(), f"work|{overlay}|work-overlay")
+        self.apply("work")
+        result = subprocess.run(command, env=environment, capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.strip(), "work||")
 
     def test_readonly_blocks_before_writes(self):
         target = self.home / ".gitconfig"

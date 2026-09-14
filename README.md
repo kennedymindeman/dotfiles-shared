@@ -131,9 +131,68 @@ and removed from the user environment before switching. Backups can contain pers
 settings, so migrating an existing personal account does not sanitize that account.
 Restart shells, tmux servers, and agent sessions after migration to clear loaded code.
 
-`home` uses the same shared configuration. A separately maintained private checkout
-can add files with `--overlay /path/to/private --profile home`; the work profile rejects
-that option. The public repository never fetches or requires an overlay.
+## Add a private overlay
+
+Keep common configuration here, personal additions in a separate private home
+repository, and work additions in an employer-owned private repository. Clone only
+the overlay needed on that machine. The public setup never fetches an overlay.
+
+An overlay must contain `profiles/work.json` for `--profile work`, or
+`profiles/home.json` for `--profile home`. The filename declares the supported
+profile; a home-only overlay cannot be selected for work. There is no fallback to
+the other profile. Start with [the synthetic work example](examples/work-overlay/README.md).
+
+After cloning and reviewing an employer-approved overlay at `~/dotfiles-work`:
+
+```sh
+sh ~/dotfiles-shared/link.sh --profile work --overlay ~/dotfiles-work --dry-run
+sh ~/dotfiles-shared/link.sh --profile work --overlay ~/dotfiles-work
+```
+
+```powershell
+& "$HOME\dotfiles-shared\link.ps1" -Profile work -Overlay "$HOME\dotfiles-work" -DryRun
+& "$HOME\dotfiles-shared\link.ps1" -Profile work -Overlay "$HOME\dotfiles-work"
+```
+
+Use `--profile home` with the separate home overlay on personal machines.
+Always pass `--overlay` when retaining it: omission removes the previous overlay's
+unchanged owned files and replaces its managed blocks with shared configuration.
+Selecting another overlay performs the same cleanup before installing its additions.
+Existing references to the previous overlay outside managed blocks require review.
+Backups remain on the machine; restart shells, tmux, and agents after a change.
+
+The manifest maps destination paths relative to the user's home to source paths
+relative to the overlay. Groups are `files` for every platform, `unix` or `windows`,
+and optionally `darwin` or `linux`. Shared files, generated blocks, policy helpers,
+and ownership state cannot be replaced by manifest entries. Files use the same
+ownership checks and backups as shared configuration. The overlay is trusted code;
+review it through the employer's normal process. It does not waive work Copilot's
+mandatory policy checks.
+
+These optional files load after the shared configuration; `<profile>` is exactly
+`work` or `home`. Omit anything the environment does not need.
+
+| Overlay file | Behavior |
+| --- | --- |
+| `gitconfig.<profile>` | Git include after shared preferences; identity or environment-specific includes |
+| `agents/<profile>.md` | Appended to generated agent instructions; shared work rules remain present |
+| `zshrc.<profile>`, `bashrc.<profile>` | Sourced after the corresponding shared shell setup on Unix |
+| `tmux.<profile>.conf` | Sourced after shared tmux on Unix |
+| `powershell/profile.<profile>.ps1` | Sourced after shared PowerShell setup on Windows |
+| `copilot/subagents.json` | Merged subagent fields; unchanged owned fields removed when no longer configured |
+
+Shell blocks set `DOTFILES_ENV` and `DOTFILES_PRIVATE_DIR` to the selected profile
+and overlay; they clear `DOTFILES_PRIVATE_DIR` when no overlay is selected. Keep
+credentials in machine-local storage or an approved credential manager. Private
+repositories are suitable for environment-specific instructions and identity,
+not secrets.
+
+For tmux's shared `C-b ?` menu, an overlay can set
+`@dotfiles-window-switch-command` (default `choose-tree -Zw`) and
+`@dotfiles-waiting-command` (default empty). The latter enables the optional
+`waiting agent` action on `g`. The six common actions stay defined in the shared
+menu. Loading shared tmux again restores both defaults; the selected overlay loads
+after it. Separate key bindings can use the same commands.
 
 ## Contribute
 
