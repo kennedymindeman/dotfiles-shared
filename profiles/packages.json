@@ -28,7 +28,7 @@
   ],
   "home": [
     {"name": "Atuin", "command": "atuin", "optional": true, "brew": "atuin", "dnf": "atuin", "winget": "Atuinsh.Atuin", "source": "https://docs.atuin.sh/cli/guide/installation/"},
-    {"name": "Ruff", "command": "ruff", "optional": true, "brew": "ruff", "dnf": "ruff", "winget": "astral-sh.ruff", "source": "https://docs.astral.sh/ruff/installation/"},
+    {"name": "Ruff", "command": "ruff", "brew": "ruff", "dnf": "ruff", "winget": "astral-sh.ruff", "source": "https://docs.astral.sh/ruff/installation/"},
     {"name": "zsh autosuggestions", "optional": true, "platforms": ["brew", "dnf"], "brew": "zsh-autosuggestions", "dnf": "zsh-autosuggestions", "source": "https://github.com/zsh-users/zsh-autosuggestions/blob/master/INSTALL.md"},
     {"name": "zsh syntax highlighting", "optional": true, "platforms": ["brew", "dnf"], "brew": "zsh-syntax-highlighting", "dnf": "zsh-syntax-highlighting", "source": "https://github.com/zsh-users/zsh-syntax-highlighting/blob/master/INSTALL.md"}
   ]

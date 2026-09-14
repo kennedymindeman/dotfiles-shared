@@ -29,7 +29,7 @@ class InstallerTests(unittest.TestCase):
         }
         for package in self.manifest["common"]:
             self.commands.update(package.get("commands", []))
-        self.commands.update({"brew", "dnf", "rpm", "sudo", "winget"})
+        self.commands.update({"brew", "dnf", "rpm", "sudo", "winget", "ruff"})
         self.installed = set()
         self.repo_packages = set()
         self.fail_installs = set()
@@ -194,6 +194,13 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("fd is still unavailable", output)
         self.assertNotIn("Required tools are available", output)
+
+    def test_home_requires_ruff_before_enabling_python_hooks(self):
+        self.commands.remove("ruff")
+        status, output = self.invoke("--profile", "home")
+        self.assertEqual(status, 1)
+        self.assertIn("Ruff: RPM ruff is unavailable", output)
+        self.assertEqual(self.installs(), [])
 
     def test_optional_installation_failure_is_reported(self):
         self.repo_packages.add("atuin")

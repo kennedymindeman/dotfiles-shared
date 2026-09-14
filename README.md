@@ -135,6 +135,11 @@ Restart shells, tmux servers, and agent sessions after migration to clear loaded
 can add files with `--overlay /path/to/private --profile home`; the work profile rejects
 that option. The public repository never fetches or requires an overlay.
 
+## Contribute
+
+Read [AGENTS.md](AGENTS.md) before editing or publishing. Changes, fixtures, commit
+metadata, issues, and pull requests must be suitable for public access.
+
 ## Validate changes
 
 ```sh

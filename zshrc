@@ -53,7 +53,23 @@ act() {
   echo "no venv found" >&2; return 1
 }
 
-[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+# Current fzf emits its own bindings; older distro packages ship shell scripts.
+if command -v fzf >/dev/null; then
+  if _dotfiles_fzf_init=$(fzf --zsh 2>/dev/null); then
+    eval "$_dotfiles_fzf_init"
+  elif [[ -f ~/.fzf.zsh ]]; then
+    source ~/.fzf.zsh
+  else
+    for _dotfiles_fzf_dir in /usr/share/fzf /usr/share/fzf/shell "${HOMEBREW_PREFIX:-/opt/homebrew}/opt/fzf/shell"; do
+      if [[ -f "$_dotfiles_fzf_dir/key-bindings.zsh" ]]; then
+        source "$_dotfiles_fzf_dir/key-bindings.zsh"
+        [[ -f "$_dotfiles_fzf_dir/completion.zsh" ]] && source "$_dotfiles_fzf_dir/completion.zsh"
+        break
+      fi
+    done
+  fi
+  unset _dotfiles_fzf_init _dotfiles_fzf_dir
+fi
 # fzf pickers use fd: respects .gitignore (so .venv etc. stay out), but do
 # show hidden files — same policy as the fd alias and telescope pickers
 if command -v fd >/dev/null; then
