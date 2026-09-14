@@ -1,0 +1,5 @@
+shell-integration-features = ssh-terminfo
+theme = Catppuccin Mocha
+
+# Make Option send Alt so shell chords (Alt+Z, Alt+C) work.
+macos-option-as-alt = true

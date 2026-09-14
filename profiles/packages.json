@@ -1,0 +1,35 @@
+{
+  "common": [
+    {"name": "Python", "command": "python", "brew": "python", "dnf": "python3.11", "winget": "Python.Python.3.14", "source": "https://docs.python.org/3/using/windows.html"},
+    {"name": "Git", "command": "git", "brew": "git", "dnf": "git", "winget": "Git.Git", "source": "https://git-scm.com/downloads"},
+    {"name": "GitHub CLI", "command": "gh", "brew": "gh", "dnf": "gh", "winget": "GitHub.cli", "source": "https://github.com/cli/cli/blob/trunk/docs/install_linux.md"},
+    {"name": "PowerShell", "command": "pwsh", "platforms": ["winget"], "winget": "Microsoft.PowerShell", "source": "https://learn.microsoft.com/en-us/powershell/scripting/install/install-powershell-on-windows"},
+    {"name": "WezTerm", "command": "wezterm", "platforms": ["winget"], "winget": "wez.wezterm", "source": "https://wezterm.org/install/windows.html"},
+    {"name": "Ghostty", "platforms": ["brew"], "brew": "ghostty", "cask": true, "source": "https://ghostty.org/docs/install/binary"},
+    {"name": "Copilot CLI", "command": "copilot", "brew": "copilot-cli", "cask": true, "dnf": null, "winget": "GitHub.Copilot", "source": "https://github.com/github/copilot-cli"},
+    {"name": "Starship", "command": "starship", "brew": "starship", "dnf": "starship", "winget": "Starship.Starship", "source": "https://starship.rs/guide/"},
+    {"name": "zoxide", "command": "zoxide", "brew": "zoxide", "dnf": "zoxide", "winget": "ajeetdsouza.zoxide", "source": "https://github.com/ajeetdsouza/zoxide#installation"},
+    {"name": "eza", "command": "eza", "brew": "eza", "dnf": "eza", "winget": "eza-community.eza", "source": "https://github.com/eza-community/eza/blob/main/INSTALL.md"},
+    {"name": "bat", "command": "bat", "brew": "bat", "dnf": "bat", "winget": "sharkdp.bat", "source": "https://github.com/sharkdp/bat#installation"},
+    {"name": "fd", "command": "fd", "brew": "fd", "dnf": "fd-find", "winget": "sharkdp.fd", "source": "https://github.com/sharkdp/fd#installation"},
+    {"name": "ripgrep", "command": "rg", "brew": "ripgrep", "dnf": "ripgrep", "winget": "BurntSushi.ripgrep.MSVC", "source": "https://github.com/BurntSushi/ripgrep#installation"},
+    {"name": "Neovim", "command": "nvim", "brew": "neovim", "dnf": "neovim", "winget": "Neovim.Neovim", "source": "https://neovim.io/doc/install/"},
+    {"name": "Helix", "command": "hx", "brew": "helix", "dnf": "helix", "winget": "Helix.Helix", "source": "https://docs.helix-editor.com/install.html"},
+    {"name": "fzf", "command": "fzf", "brew": "fzf", "dnf": "fzf", "winget": "junegunn.fzf", "source": "https://github.com/junegunn/fzf#installation"},
+    {"name": "delta", "command": "delta", "brew": "git-delta", "dnf": "git-delta", "winget": "dandavison.delta", "source": "https://github.com/dandavison/delta#installation"},
+    {"name": "jq", "command": "jq", "brew": "jq", "dnf": "jq", "winget": "jqlang.jq", "source": "https://jqlang.org/download/"},
+    {"name": "tmux", "command": "tmux", "platforms": ["brew", "dnf"], "brew": "tmux", "dnf": "tmux", "source": "https://github.com/tmux/tmux/wiki/Installing", "unsupported": "Native Windows is unsupported; use tmux on a separately configured WSL or remote Linux host."},
+    {"name": "zsh", "command": "zsh", "platforms": ["brew", "dnf"], "brew": "zsh", "dnf": "zsh", "source": "https://www.zsh.org/"},
+    {"name": "bubblewrap", "command": "bwrap", "platforms": ["dnf"], "dnf": "bubblewrap", "source": "https://docs.github.com/en/copilot/concepts/about-cloud-and-local-sandboxes"},
+    {"name": "slirp4netns", "command": "slirp4netns", "platforms": ["dnf"], "dnf": "slirp4netns", "source": "https://docs.github.com/en/copilot/concepts/about-cloud-and-local-sandboxes"},
+    {"name": "util-linux sandbox tools", "commands": ["unshare", "nsenter"], "platforms": ["dnf"], "dnf": "util-linux", "source": "https://docs.github.com/en/copilot/concepts/about-cloud-and-local-sandboxes"},
+    {"name": "iptables sandbox tools", "commands": ["iptables", "ip6tables", "iptables-restore", "ip6tables-restore"], "platforms": ["dnf"], "dnf": "iptables-nft", "source": "https://docs.github.com/en/copilot/concepts/about-cloud-and-local-sandboxes"},
+    {"name": "PSFzf", "module": "PSFzf", "platforms": ["winget"], "source": "https://github.com/kelleyma49/PSFzf"}
+  ],
+  "home": [
+    {"name": "Atuin", "command": "atuin", "optional": true, "brew": "atuin", "dnf": "atuin", "winget": "Atuinsh.Atuin", "source": "https://docs.atuin.sh/cli/guide/installation/"},
+    {"name": "Ruff", "command": "ruff", "optional": true, "brew": "ruff", "dnf": "ruff", "winget": "astral-sh.ruff", "source": "https://docs.astral.sh/ruff/installation/"},
+    {"name": "zsh autosuggestions", "optional": true, "platforms": ["brew", "dnf"], "brew": "zsh-autosuggestions", "dnf": "zsh-autosuggestions", "source": "https://github.com/zsh-users/zsh-autosuggestions/blob/master/INSTALL.md"},
+    {"name": "zsh syntax highlighting", "optional": true, "platforms": ["brew", "dnf"], "brew": "zsh-syntax-highlighting", "dnf": "zsh-syntax-highlighting", "source": "https://github.com/zsh-users/zsh-syntax-highlighting/blob/master/INSTALL.md"}
+  ]
+}

@@ -1,0 +1,146 @@
+# dotfiles-shared
+
+Shared terminal, editor, Git, and Copilot configuration for Windows, Red Hat Linux,
+and macOS. Clone this repository over HTTPS without signing into GitHub. It contains
+no Git identity, credential helpers, personal services, history sync, or private
+repository dependency.
+
+Use `work` on employer machines. Use the employer's approved account when signing
+into Copilot or another service; cloning these files needs no account.
+
+## Set up Red Hat Linux
+
+Install Git and Python 3.11 or newer through your approved package source. Clone
+this repository, then inspect the package plan:
+
+```sh
+git clone https://github.com/kennedymindeman/dotfiles-shared.git ~/dotfiles-shared
+sh ~/dotfiles-shared/install.sh --profile work --dry-run
+sh ~/dotfiles-shared/install.sh --profile work
+sh ~/dotfiles-shared/link.sh --profile work --dry-run
+sh ~/dotfiles-shared/link.sh --profile work
+```
+
+The package installer uses enabled DNF repositories. It stops before installing
+anything if a required package is unavailable. Give that report to IT, or install
+the missing tools through an approved source and rerun. It does not enable EPEL,
+CRB, or Copr, add repositories, or execute remote install scripts. RHEL releases
+and enabled repositories differ, so a full setup can require additional approved
+packages.
+
+Start a new `zsh` shell after linking. The installer does not change your login shell.
+Bash receives the Copilot launcher; the full interactive shell configuration is zsh.
+
+## Set up Windows
+
+Install Git, Python 3.11+, and PowerShell 7 with winget, then open a new PowerShell 7
+window so the new executables are on PATH:
+
+```powershell
+winget install --id Git.Git --exact --source winget
+winget install --id Python.Python.3.14 --exact --source winget
+winget install --id Microsoft.PowerShell --exact --source winget
+```
+
+Clone and review the setup plan:
+
+```powershell
+git clone https://github.com/kennedymindeman/dotfiles-shared.git "$HOME\dotfiles-shared"
+& "$HOME\dotfiles-shared\install.ps1" -Profile work -DryRun
+& "$HOME\dotfiles-shared\install.ps1" -Profile work
+& "$HOME\dotfiles-shared\link.ps1" -Profile work -DryRun
+& "$HOME\dotfiles-shared\link.ps1" -Profile work
+```
+
+The installer uses exact winget package IDs and installs PSFzf for the current user.
+The linker preserves existing PowerShell profile content and uses copies where
+Windows symlinks would need extra privileges. It does not change execution policy
+or PowerShell Gallery trust. Native Windows has no tmux; use tmux on the Linux host.
+
+## Set up macOS
+
+With Homebrew and Python 3.11+ already installed, run the same `install.sh` and
+`link.sh` commands. Package installation uses Homebrew and does not bootstrap it.
+
+## Configure Git identity
+
+Existing Git identity and credential settings are preserved. A fresh installation
+requires you to choose an identity before committing:
+
+```sh
+git config --global user.name 'Your Name'
+git config --global user.email 'your.work@example.com'
+```
+
+Use a repository-local identity or your employer's include rules when appropriate.
+
+## Enable Copilot for work
+
+The work launcher refuses to start without a local mandatory sandbox policy.
+Ask IT to review [the policy example](copilot/managed-settings.example.json) and
+install it using [GitHub's managed settings deployment instructions](https://docs.github.com/en/copilot/how-tos/administer-copilot/manage-for-enterprise/use-managed-settings/deploy-managed-settings).
+The file belongs at:
+
+| Platform | Managed policy file |
+| --- | --- |
+| Red Hat Linux | `/etc/github-copilot/managed-settings.json` |
+| Windows | `%ProgramFiles%\GitHubCopilot\managed-settings.json` |
+| macOS | `/Library/Application Support/GitHubCopilot/managed-settings.json` |
+
+The policy requires `sandbox.enabled: true`, `sandbox.failIfUnavailable: true`,
+and `sandbox.allowBypass: false`. These settings make Copilot block model and tool
+execution when it cannot enforce sandboxing. See [GitHub's sandbox policy reference](https://docs.github.com/en/copilot/reference/enterprise-administrators/enterprise-managed-settings#sandbox).
+The linker cannot install an administrator-owned policy.
+
+On Linux, the launcher also checks bubblewrap 0.5+, slirp4netns, compatible
+`unshare`/`nsenter`, iptables tools, and `/dev/net/tun`. An older RHEL release can
+lack the required util-linux capabilities. On Windows it checks the native
+sandbox capabilities. If either host fails these checks, Copilot stays blocked.
+Use a supported, employer-approved host or environment before running it.
+
+The shell functions are convenience checks. Copilot and its managed policy enforce
+the security boundary. The check intentionally requires a local file even if your
+organization uses registry, MDM, or server-only settings. On Windows, IT must protect
+the policy file with the appropriate ACLs; the Python check does not validate ACLs.
+Package tests and mocked launcher tests do not prove OS containment. Before using
+work data, check `/sandbox status` and `/sandbox policy` in the installed CLI and
+validate the effective policy on that machine with IT.
+
+Copilot uses manual approvals, disables its built-in MCP servers in the launcher,
+and restricts sensitive paths. Outbound internet remains allowed. This repository
+does not authorize uploading employer data to any AI service.
+
+## Update or change profiles
+
+The profile resolves from `--profile`, then `DOTFILES_ENV`, then `~/.dotfiles-env`.
+There is no default. Invalid or absent choices stop before configuration writes.
+`--dry-run` validates conflicts and prints planned changes without writing files.
+
+Rerun the linker after updating this checkout. It records installed files and
+managed blocks in `~/.config/dotfiles/state.json`. Before replacing a file it saves
+its previous contents under `~/.config/dotfiles/backups/`. Unix config symlinks load
+updates from this checkout immediately; Windows copies refresh when relinked.
+
+Prefer a fresh OS account for a work setup. To change a previously installed home
+profile to work, use this public repository with `--profile work`. The linker removes
+unchanged files it owns and replaces its managed blocks. Edited files, old untracked
+installations, external MCP registrations, and known private startup or service references
+require review before the switch. Existing agent instructions outside managed blocks
+also require review. An old Windows `WEZTERM_CONFIG_FILE` override must be reviewed
+and removed from the user environment before switching. Backups can contain personal
+settings, so migrating an existing personal account does not sanitize that account.
+Restart shells, tmux servers, and agent sessions after migration to clear loaded code.
+
+`home` uses the same shared configuration. A separately maintained private checkout
+can add files with `--overlay /path/to/private --profile home`; the work profile rejects
+that option. The public repository never fetches or requires an overlay.
+
+## Validate changes
+
+```sh
+python3 -B -m unittest discover -s tests -p 'test_*.py' -v
+sh tests/test_copilot_shell_defaults.sh
+```
+
+On Windows, also run `./tests/test_copilot_shell_defaults.ps1` in PowerShell.
+CI runs the Python tests on Linux, macOS, and Windows, plus the native shell tests.
