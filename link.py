@@ -44,7 +44,9 @@ class Installer:
         self.repo, self.home = repo, home
         self.profile, self.platform, self.overlay = profile, platform, overlay
         self.state_path = self.target(".config/dotfiles/state.json")
-        self.target(".config/dotfiles/backups")
+        backups = self.target(".config/dotfiles/backups")
+        if backups.is_symlink():
+            raise ValueError(f"refusing symlinked backup directory: {backups}")
         marker = self.target(".dotfiles-env")
         if marker.is_symlink():
             raise ValueError(f"refusing symlinked profile marker: {marker}")
@@ -141,6 +143,7 @@ class Installer:
             original = ""
         else:
             original = path.read_text(encoding="utf-8-sig") if path.exists() else ""
+        before = original
         if digest(original.encode()) in self.legacy.get(relative, []):
             original = ""
         if (
@@ -220,7 +223,7 @@ class Installer:
             raise ValueError(
                 f"review existing global agent instructions before using work: {path}"
             )
-        if path.is_symlink() or updated != original:
+        if path.is_symlink() or updated != before:
             self.changes.append((relative, "bytes", updated.encode()))
 
     def retire(self):

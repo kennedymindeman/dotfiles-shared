@@ -51,7 +51,7 @@ return {
     nav 'j',
     nav 'k',
     nav 'l',
-    -- split panes (tmux-ish): Ctrl+Shift+ - / \ 
+    -- split panes (tmux-ish): Ctrl+Shift+ - / \
     { key = '\\', mods = 'CTRL|SHIFT', action = act.SplitHorizontal { domain = 'CurrentPaneDomain' } },
     { key = '-', mods = 'CTRL|SHIFT', action = act.SplitVertical { domain = 'CurrentPaneDomain' } },
   },

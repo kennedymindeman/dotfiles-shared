@@ -24,4 +24,3 @@ function Find-DotfilesPython {
     }
     return $null
 }
-

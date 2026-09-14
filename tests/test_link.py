@@ -105,6 +105,20 @@ class LinkTests(unittest.TestCase):
             self.apply("work")
         self.assertEqual(before, self.snapshot())
 
+    @unittest.skipIf(os.name == "nt", "symlink creation requires Windows privileges")
+    def test_backup_symlink_cannot_redirect_private_configuration(self):
+        outside = self.base / "outside"
+        outside.mkdir()
+        backups = self.home / ".config/dotfiles/backups"
+        backups.parent.mkdir(parents=True)
+        backups.symlink_to(outside, target_is_directory=True)
+        self.write(self.home / ".gitconfig", "# existing private settings\n")
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "symlinked backup"):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(list(outside.iterdir()), [])
+
     def test_dry_run_writes_nothing(self):
         self.apply(dry=True)
         self.assertEqual(self.snapshot(), {})
