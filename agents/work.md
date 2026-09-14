@@ -5,7 +5,7 @@ Follow the employer's repository instructions, review process, and approved tool
 Commit, publish, merge, deploy, or change tickets only when explicitly authorized for the task. Use only approved accounts and destinations for work data. Ask before enabling external notifications, history sync, or services.
 
 # credentials
-Keep work identity and credentials in machine-local configuration or the employer's credential manager.
+Use the employer's approved Git identity. Keep credentials in machine-local configuration or the employer's credential manager.
 
 # delegation
 When delegation is available and authorized, give each agent a bounded task.
