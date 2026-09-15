@@ -49,26 +49,21 @@ def is_redirecting_link(path):
     )
 
 
-def redirecting_component(path):
-    current = path
-    while True:
-        if is_redirecting_link(current):
-            return current
-        parent = current.parent
-        if parent == current:
-            return None
-        current = parent
-
-
 class Installer:
     def __init__(
         self, repo, home, profile, platform, overlay=None, copilot_home=None
     ):
         self.repo, self.home = repo, home
         self.profile, self.platform, self.overlay = profile, platform, overlay
-        self.copilot_home = copilot_home or home / ".copilot"
-        if not self.copilot_home.is_absolute():
+        selected_copilot_home = copilot_home or home / ".copilot"
+        if not selected_copilot_home.is_absolute():
             raise ValueError("COPILOT_HOME must be an absolute path")
+        if is_redirecting_link(selected_copilot_home):
+            raise ValueError(
+                "review symlinked configuration directory before installing: "
+                f"{selected_copilot_home}"
+            )
+        self.copilot_home = selected_copilot_home.resolve(strict=False)
         self.state_path = self.target(".config/dotfiles/state.json")
         backups = self.target(".config/dotfiles/backups")
         if is_redirecting_link(backups):
@@ -115,11 +110,6 @@ class Installer:
         else:
             root = self.home
             path = root / relative_path
-        redirected = redirecting_component(root)
-        if redirected:
-            raise ValueError(
-                f"review symlinked configuration directory before installing: {redirected}"
-            )
         for parent in path.parents:
             if parent == root:
                 break

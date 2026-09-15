@@ -228,7 +228,7 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(list(outside.iterdir()), [])
 
     @unittest.skipUnless(os.name == "nt", "junctions are Windows-specific")
-    def test_copilot_home_beneath_junction_cannot_redirect_writes(self):
+    def test_copilot_home_beneath_junction_is_pinned_to_physical_path(self):
         outside = self.base / "outside-parent"
         outside.mkdir()
         junction = self.base / "junction-parent"
@@ -240,9 +240,13 @@ class LinkTests(unittest.TestCase):
         if result.returncode:
             self.skipTest("junction creation is unavailable")
 
-        with self.assertRaisesRegex(ValueError, "symlinked configuration directory"):
-            self.plan(copilot_home=junction / "managed-copilot")
-        self.assertEqual(list(outside.iterdir()), [])
+        installer = self.plan(copilot_home=junction / "managed-copilot")
+        self.assertEqual(
+            installer.copilot_home,
+            (outside / "managed-copilot").resolve(),
+        )
+        installer.apply(False)
+        self.assertTrue((outside / "managed-copilot/settings.json").exists())
 
     def test_unknown_file_blocks_entire_install(self):
         self.write(self.home / ".config/shared.txt", "locally customized")
