@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require a local managed sandbox policy for the work launcher."""
+"""Check a local managed sandbox policy for the work launcher."""
 
 import json
 import os
@@ -46,6 +46,14 @@ def main():
         path = Path("/Library/Application Support/GitHubCopilot/managed-settings.json")
     else:
         path = Path("/etc/github-copilot/managed-settings.json")
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        print(
+            f"copilot: warning: administrator-managed sandbox policy is missing: {path}",
+            file=sys.stderr,
+        )
+        return
     validate_policy(path)
 
 

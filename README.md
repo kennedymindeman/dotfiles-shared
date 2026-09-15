@@ -80,9 +80,11 @@ overrides.
 
 ## Enable Copilot for work
 
-The work launcher refuses to start without a local mandatory sandbox policy.
-Ask IT to review [the policy example](copilot/managed-settings.example.json) and
-install it using [GitHub's managed settings deployment instructions](https://docs.github.com/en/copilot/how-tos/administer-copilot/manage-for-enterprise/use-managed-settings/deploy-managed-settings).
+The work launcher warns when a local mandatory sandbox policy is absent. If a
+policy file is present, the launcher refuses to start unless it passes
+validation. Ask IT to review
+[the policy example](copilot/managed-settings.example.json) and install it using
+[GitHub's managed settings deployment instructions](https://docs.github.com/en/copilot/how-tos/administer-copilot/manage-for-enterprise/use-managed-settings/deploy-managed-settings).
 The file belongs at:
 
 | Platform | Managed policy file |
@@ -99,16 +101,17 @@ The linker cannot install an administrator-owned policy.
 On Linux, the launcher also checks bubblewrap 0.5+, slirp4netns, compatible
 `unshare`/`nsenter`, iptables tools, and `/dev/net/tun`. An older RHEL release can
 lack the required util-linux capabilities. On Windows it checks the native
-sandbox capabilities. If either host fails these checks, Copilot stays blocked.
-Use a supported, employer-approved host or environment before running it.
+sandbox capabilities. If a host fails these checks, the launcher warns and lets
+Copilot apply its configured sandbox behavior. Use a supported, employer-approved
+host or environment before working with sensitive data.
 
 The shell functions are convenience checks. Copilot and its managed policy enforce
-the security boundary. The check intentionally requires a local file even if your
-organization uses registry, MDM, or server-only settings. On Windows, IT must protect
-the policy file with the appropriate ACLs; the Python check does not validate ACLs.
-Package tests and mocked launcher tests do not prove OS containment. Before using
-work data, check `/sandbox status` and `/sandbox policy` in the installed CLI and
-validate the effective policy on that machine with IT.
+the security boundary. A missing local policy file does not prove that managed
+settings delivered through registry, MDM, or the server are absent. On Windows, IT
+must protect a local policy file with the appropriate ACLs; the Python check does not
+validate ACLs. Package tests and mocked launcher tests do not prove OS containment.
+Before using work data, check `/sandbox status` and `/sandbox policy` in the installed
+CLI and validate the effective policy on that machine with IT.
 
 Copilot uses manual approvals, disables its built-in MCP servers in the launcher,
 and restricts sensitive paths. Outbound internet remains allowed. This repository

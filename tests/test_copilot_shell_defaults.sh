@@ -267,18 +267,19 @@ cat >"$tmp/missing-bin/slirp4netns" <<'EOF'
 exit 1
 EOF
 chmod +x "$tmp/missing-bin/slirp4netns"
-if (
+if ! (
   cd "$tmp/home/projects/demo"
   HOME="$tmp/home" PATH="$tmp/missing-bin:$tmp/bin:$PATH" "$shell" -c \
     '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
 ) >"$tmp/prerequisite-output" 2>&1; then
-  echo "FAIL: Linux sandbox with missing prerequisites was allowed" >&2
+  echo "FAIL: unavailable Linux sandbox blocked launch" >&2
   exit 1
 fi
-grep -q 'requires slirp4netns' "$tmp/prerequisite-output" || {
+grep -q 'slirp4netns is unusable' "$tmp/prerequisite-output" || {
   cat "$tmp/prerequisite-output" >&2
   exit 1
 }
+grep -Fxq -- '--experimental' "$tmp/prerequisite-output"
 
 if (
   cd /
@@ -296,29 +297,68 @@ cat > "$tmp/old-bin/bwrap" <<'EOF'
 echo "bubblewrap 0.4.0"
 EOF
 chmod +x "$tmp/old-bin/bwrap"
-if (
+if ! (
   cd "$tmp/home/projects/demo"
   HOME="$tmp/home" PATH="$tmp/old-bin:$tmp/bin:$PATH" sh -c \
     '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
 ) >"$tmp/sandbox-output" 2>&1; then
-  echo "FAIL: unsupported bubblewrap version was allowed" >&2
+  echo "FAIL: unsupported bubblewrap version blocked launch" >&2
   exit 1
 fi
-grep -q 'requires bwrap 0.5.0 or newer' "$tmp/sandbox-output"
+grep -q 'without bwrap 0.5.0 or newer' "$tmp/sandbox-output"
+grep -Fxq -- '--experimental' "$tmp/sandbox-output"
 
 cat > "$tmp/old-bin/bwrap" <<'EOF'
 #!/bin/sh
 echo "unknown"
 EOF
-if (
+if ! (
   cd "$tmp/home/projects/demo"
   HOME="$tmp/home" PATH="$tmp/old-bin:$tmp/bin:$PATH" sh -c \
     '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
 ) >"$tmp/sandbox-output" 2>&1; then
-  echo "FAIL: unparsable bubblewrap version was allowed" >&2
+  echo "FAIL: unparsable bubblewrap version blocked launch" >&2
   exit 1
 fi
-grep -q 'requires bwrap 0.5.0 or newer' "$tmp/sandbox-output"
+grep -q 'without bwrap 0.5.0 or newer' "$tmp/sandbox-output"
+grep -Fxq -- '--experimental' "$tmp/sandbox-output"
+
+cat > "$tmp/old-bin/bwrap" <<'EOF'
+#!/bin/sh
+echo "bubblewrap 0.5.0"
+exit 1
+EOF
+if ! (
+  cd "$tmp/home/projects/demo"
+  HOME="$tmp/home" PATH="$tmp/old-bin:$tmp/bin:$PATH" sh -c \
+    '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
+) >"$tmp/sandbox-output" 2>&1; then
+  echo "FAIL: failed bubblewrap probe blocked launch" >&2
+  exit 1
+fi
+grep -q 'without bwrap 0.5.0 or newer' "$tmp/sandbox-output"
+grep -Fxq -- '--experimental' "$tmp/sandbox-output"
+
+cat > "$tmp/old-bin/bwrap" <<'EOF'
+#!/bin/sh
+echo "bubblewrap 0.5.0"
+EOF
+cat > "$tmp/old-bin/unshare" <<'EOF'
+#!/bin/sh
+echo "--map-current-user --keep-caps"
+exit 1
+EOF
+chmod +x "$tmp/old-bin/unshare"
+if ! (
+  cd "$tmp/home/projects/demo"
+  HOME="$tmp/home" PATH="$tmp/old-bin:$tmp/bin:$PATH" sh -c \
+    '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
+) >"$tmp/sandbox-output" 2>&1; then
+  echo "FAIL: failed unshare probe blocked launch" >&2
+  exit 1
+fi
+grep -q 'without compatible util-linux' "$tmp/sandbox-output"
+grep -Fxq -- '--experimental' "$tmp/sandbox-output"
 
 cat > "$tmp/bin/python3.14" <<'EOF'
 #!/bin/sh

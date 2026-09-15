@@ -42,9 +42,11 @@ function Test-CopilotSandboxCapabilities
 
 function Test-CopilotSandboxSupported
 {
-    if (-not ('CopilotSandboxNative' -as [type]))
+    try
     {
-        Add-Type -TypeDefinition @'
+        if (-not ('CopilotSandboxNative' -as [type]))
+        {
+            Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
@@ -88,10 +90,7 @@ public static class CopilotSandboxNative
     }
 }
 '@
-    }
-
-    try
-    {
+        }
         [UInt64]$capabilities = 0
         return [CopilotSandboxNative]::TryGetCapabilities([ref]$capabilities) -and
             (Test-CopilotSandboxCapabilities -Capabilities $capabilities)
@@ -227,8 +226,11 @@ function Get-CopilotLaunchBlockReason
         if (-not $python) { return 'Python is required to verify the work sandbox policy' }
         $policyOutput = & $python (Join-Path $HOME '.config/dotfiles/check-copilot-policy.py') 2>&1
         if ($LASTEXITCODE -ne 0) { return "required managed sandbox policy could not be verified: $($policyOutput -join "`n")" }
+        if ($policyOutput) {
+            Write-Warning ($policyOutput -join "`n") -WarningAction Continue
+        }
         if (-not (Test-CopilotSandboxSupported)) {
-            return 'this Windows host cannot enforce the required work sandbox'
+            Write-Warning 'copilot: warning: this Windows host cannot enforce the work sandbox' -WarningAction Continue
         }
     }
 
