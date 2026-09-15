@@ -106,13 +106,14 @@ class Installer:
             raise ValueError(f"invalid installation path: {relative}")
         if relative_path.parts[0] == ".copilot":
             root = self.copilot_home
-            path = root.joinpath(*relative_path.parts[1:])
+            parts = relative_path.parts[1:]
         else:
             root = self.home
-            path = root / relative_path
-        for parent in path.parents:
-            if parent == root:
-                break
+            parts = relative_path.parts
+        path = root.joinpath(*parts)
+        parent = root
+        for part in parts[:-1]:
+            parent /= part
             if is_redirecting_link(parent):
                 raise ValueError(
                     f"review symlinked configuration directory before installing: {parent}"
