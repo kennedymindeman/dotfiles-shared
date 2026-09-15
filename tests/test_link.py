@@ -180,7 +180,7 @@ class LinkTests(unittest.TestCase):
         )
         settings = json.loads((copilot_home / "settings.json").read_text())
         denied = settings["sandbox"]["userPolicy"]["filesystem"]["deniedPaths"]
-        self.assertIn(str(copilot_home / "session-state"), denied)
+        self.assertIn(str(copilot_home.resolve() / "session-state"), denied)
 
     def test_changed_copilot_home_requires_review(self):
         first = self.base / "managed-copilot-first"
