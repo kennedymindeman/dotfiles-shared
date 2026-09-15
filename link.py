@@ -40,12 +40,15 @@ def atomic_write(path, data):
 
 
 def is_redirecting_link(path):
-    if path.is_symlink():
+    try:
+        details = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if stat.S_ISLNK(details.st_mode):
         return True
-    return (
+    return bool(
         os.name == "nt"
-        and path.exists()
-        and os.lstat(path).st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        and details.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
     )
 
 

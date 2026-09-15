@@ -4,12 +4,13 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -145,6 +146,17 @@ class LinkTests(unittest.TestCase):
             self.apply()
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(list(outside.iterdir()), [])
+
+    def test_unavailable_reparse_target_is_redirecting(self):
+        details = Mock(
+            st_mode=stat.S_IFDIR,
+            st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+        )
+        with (
+            patch.object(link.os, "name", "nt"),
+            patch.object(link.os, "lstat", return_value=details),
+        ):
+            self.assertTrue(link.is_redirecting_link(self.base / "unavailable"))
 
     def test_dry_run_writes_nothing(self):
         self.apply(dry=True)
