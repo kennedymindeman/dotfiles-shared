@@ -2,17 +2,22 @@
 set -eu
 
 export DOTFILES_ENV=home
+unset COPILOT_HOME
 repo=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 shell=$(command -v sh)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-copilot-shell-defaults.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p \
+  "$tmp/actual-aws/project" \
   "$tmp/home/projects/demo" \
   "$tmp/home/.gnupg/project" \
   "$tmp/home/.ssh/project" \
   "$tmp/home/.config/Bitwarden CLI/project" \
+  "$tmp/managed-copilot-actual/project" \
+  "$tmp/managed-copilot/project" \
   "$tmp/bin"
+ln -s "$tmp/actual-aws" "$tmp/home/.aws" 2>/dev/null || true
 touch "$tmp/tun"
 export COPILOT_SANDBOX_TUN_DEVICE="$tmp/tun"
 cat > "$tmp/bin/copilot" <<'EOF'
@@ -57,6 +62,56 @@ if printf '%s\n' "$output" | grep -Fqx -- '--deny-tool=shell(git push)'; then
   echo "FAIL: git push remains permanently denied" >&2
   exit 1
 fi
+
+output=$(
+  cd "$tmp/home/projects/demo"
+  HOME="$tmp/home" PATH="$tmp/bin:$PATH" COPILOT_HOME="$tmp/managed-copilot" sh -c \
+    '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
+)
+printf '%s\n' "$output" | grep -Fx -- '--experimental'
+
+if (
+  cd "$tmp/home/projects/demo"
+  HOME="$tmp/home" PATH="$tmp/bin:$PATH" COPILOT_HOME="$tmp/managed-copilot" sh -c \
+    '. "$1/copilot/shell-defaults.sh"; COPILOT_HOME="$2"; export COPILOT_HOME; copilot --version' \
+    sh "$repo" "$tmp/other-copilot"
+) >"$tmp/environment-output" 2>&1; then
+  echo "FAIL: COPILOT_HOME override after wrapper load was allowed" >&2
+  exit 1
+fi
+grep -q 'COPILOT_HOME changed' "$tmp/environment-output"
+
+if (
+  cd "$tmp/managed-copilot/project"
+  HOME="$tmp/home" PATH="$tmp/bin:$PATH" COPILOT_HOME="$tmp/managed-copilot" sh -c \
+    '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
+) >"$tmp/sensitive-output" 2>&1; then
+  echo "FAIL: managed Copilot home workspace was allowed" >&2
+  exit 1
+fi
+grep -q 'workspace overlaps' "$tmp/sensitive-output"
+
+if [ -L "$tmp/home/.aws" ]; then
+  if (
+    cd "$tmp/actual-aws/project"
+    HOME="$tmp/home" PATH="$tmp/bin:$PATH" sh -c \
+      '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
+  ) >"$tmp/sensitive-output" 2>&1; then
+    echo "FAIL: symlinked sensitive workspace was allowed" >&2
+    exit 1
+  fi
+  grep -q 'workspace overlaps' "$tmp/sensitive-output"
+fi
+
+if (
+  cd "$tmp/managed-copilot-actual/project"
+  HOME="$tmp/home" PATH="$tmp/bin:$PATH" COPILOT_HOME="$tmp/managed-copilot-actual/../managed-copilot-actual" sh -c \
+    '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
+) >"$tmp/sensitive-output" 2>&1; then
+  echo "FAIL: managed Copilot home path alias was allowed" >&2
+  exit 1
+fi
+grep -q 'workspace overlaps' "$tmp/sensitive-output"
 
 if (
   cd "$tmp/home"

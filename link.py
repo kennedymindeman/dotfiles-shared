@@ -39,13 +39,39 @@ def atomic_write(path, data):
             os.unlink(temporary)
 
 
+def is_redirecting_link(path):
+    if path.is_symlink():
+        return True
+    return (
+        os.name == "nt"
+        and path.exists()
+        and os.lstat(path).st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
+def redirecting_component(path):
+    current = path
+    while True:
+        if is_redirecting_link(current):
+            return current
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
 class Installer:
-    def __init__(self, repo, home, profile, platform, overlay=None):
+    def __init__(
+        self, repo, home, profile, platform, overlay=None, copilot_home=None
+    ):
         self.repo, self.home = repo, home
         self.profile, self.platform, self.overlay = profile, platform, overlay
+        self.copilot_home = copilot_home or home / ".copilot"
+        if not self.copilot_home.is_absolute():
+            raise ValueError("COPILOT_HOME must be an absolute path")
         self.state_path = self.target(".config/dotfiles/state.json")
         backups = self.target(".config/dotfiles/backups")
-        if backups.is_symlink():
+        if is_redirecting_link(backups):
             raise ValueError(f"refusing symlinked backup directory: {backups}")
         marker = self.target(".dotfiles-env")
         if marker.is_symlink():
@@ -57,6 +83,16 @@ class Installer:
             self.old.get("files"), dict
         ):
             raise TypeError(f"invalid ownership state: {self.state_path}")
+        previous_copilot_home = Path(
+            self.old.get("copilot_home", home / ".copilot")
+        )
+        if self.old["files"] and os.path.normcase(
+            os.path.abspath(previous_copilot_home)
+        ) != os.path.normcase(os.path.abspath(self.copilot_home)):
+            raise ValueError(
+                "COPILOT_HOME changed since the previous install; review the old "
+                f"managed configuration at {previous_copilot_home} before relinking"
+            )
         self.records = {}
         self.changes = []
         self.legacy = (
@@ -66,17 +102,28 @@ class Installer:
         )
 
     def target(self, relative):
-        path = self.home / relative
+        relative_path = Path(relative)
         if (
-            Path(relative).is_absolute()
-            or ".." in Path(relative).parts
-            or Path(relative) == Path(".")
+            relative_path.is_absolute()
+            or ".." in relative_path.parts
+            or relative_path == Path(".")
         ):
             raise ValueError(f"invalid installation path: {relative}")
+        if relative_path.parts[0] == ".copilot":
+            root = self.copilot_home
+            path = root.joinpath(*relative_path.parts[1:])
+        else:
+            root = self.home
+            path = root / relative_path
+        redirected = redirecting_component(root)
+        if redirected:
+            raise ValueError(
+                f"review symlinked configuration directory before installing: {redirected}"
+            )
         for parent in path.parents:
-            if parent == self.home:
+            if parent == root:
                 break
-            if parent.is_symlink():
+            if is_redirecting_link(parent):
                 raise ValueError(
                     f"review symlinked configuration directory before installing: {parent}"
                 )
@@ -288,7 +335,7 @@ class Installer:
             if not parent.is_dir() or not os.access(parent, os.W_OK):
                 raise ValueError(f"configuration directory is not writable: {parent}")
         for relative, action, _ in self.changes:
-            print(f"{action}: {self.home / relative}")
+            print(f"{action}: {self.target(relative)}")
         if dry_run:
             return
         backup = None
@@ -297,6 +344,10 @@ class Installer:
             if path.exists() or path.is_symlink():
                 if backup is None:
                     directory = self.home / ".config/dotfiles/backups"
+                    if is_redirecting_link(directory):
+                        raise ValueError(
+                            f"refusing symlinked backup directory: {directory}"
+                        )
                     directory.mkdir(parents=True, exist_ok=True)
                     backup = Path(tempfile.mkdtemp(prefix="install-", dir=directory))
                 saved = backup / relative
@@ -318,6 +369,7 @@ class Installer:
         state = {
             "profile": self.profile,
             "files": self.records,
+            "copilot_home": str(self.copilot_home),
             "copilot_subagents": self.subagents,
         }
         if self.overlay:
@@ -422,9 +474,12 @@ def plan(
     overlay=None,
     powershell_profile=None,
     wezterm_user_config=None,
+    copilot_home=None,
 ):
     additions = configured_files(overlay, platform, profile) if overlay else {}
-    installer = Installer(repo, home, profile, platform, overlay)
+    installer = Installer(
+        repo, home, profile, platform, overlay, copilot_home=copilot_home
+    )
     check_home_integrations(installer, powershell_profile)
     previous = home / ".dotfiles-env"
     if (
@@ -546,7 +601,11 @@ def plan(
             del agents[name]
     installer.subagents = subagents
     updated = module.build_settings(
-        settings, subagents, str(home), "windows" if platform == "windows" else "unix"
+        settings,
+        subagents,
+        str(home),
+        "windows" if platform == "windows" else "unix",
+        copilot_home=str(installer.copilot_home),
     )
     updated["footer"]["showUsername"] = True
     data = (json.dumps(updated, indent=2) + "\n").encode()
@@ -569,6 +628,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         home = Path.home()
+        copilot_home = Path(os.environ.get("COPILOT_HOME", home / ".copilot"))
         profile = resolve_profile(args.profile, home)
         platform = "windows" if os.name == "nt" else sys.platform
         installer = plan(
@@ -579,6 +639,7 @@ def main(argv=None):
             args.overlay.resolve() if args.overlay else None,
             args.powershell_profile,
             args.wezterm_user_config,
+            copilot_home,
         )
         installer.apply(args.dry_run)
     except (OSError, ValueError, TypeError, KeyError) as error:

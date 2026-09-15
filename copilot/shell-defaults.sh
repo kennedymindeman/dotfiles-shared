@@ -1,3 +1,5 @@
+_copilot_expected_home=${COPILOT_HOME:-}
+
 copilot() {
   if [ "${DOTFILES_ENV:-}" = work ] ||
     [ "$(cat "$HOME/.dotfiles-env" 2>/dev/null)" = work ]; then
@@ -90,12 +92,17 @@ copilot() {
       return 2
     fi
   done
-  if [ -n "${COPILOT_HOME:-}" ]; then
-    echo "copilot: refusing launch because COPILOT_HOME can select settings outside the hardened configuration" >&2
+  if [ "${COPILOT_HOME:-}" != "$_copilot_expected_home" ]; then
+    echo "copilot: refusing launch because COPILOT_HOME changed after the hardened configuration loaded" >&2
     return 2
   fi
 
   copilot_home=$(CDPATH= cd -- "$HOME" && pwd -P) || return 2
+  copilot_config_home=${_copilot_expected_home:-"$copilot_home/.copilot"}
+  if [ -d "$copilot_config_home" ]; then
+    copilot_config_home=$(CDPATH= cd -- "$copilot_config_home" && pwd -P) ||
+      return 2
+  fi
   copilot_cwd=$(pwd -P) || return 2
   if [ "$copilot_cwd" = "$copilot_home" ]; then
     echo "copilot: refusing launch because the workspace is the home directory" >&2
@@ -120,11 +127,18 @@ copilot() {
     "$copilot_home/.config/Bitwarden CLI" \
     "$copilot_home/.config/gh" \
     "$copilot_home/.copilot" \
+    "$copilot_config_home" \
     "$copilot_home/.gnupg" \
     "$copilot_home/.ssh" \
     "$copilot_home/Library/Application Support/Bitwarden" \
     "$copilot_home/Library/Application Support/Bitwarden CLI"
   do
+    if [ -d "$copilot_sensitive" ]; then
+      copilot_sensitive=$(CDPATH= cd -- "$copilot_sensitive" && pwd -P) || {
+        echo "copilot: refusing launch because sensitive path '$copilot_sensitive' cannot be resolved" >&2
+        return 2
+      }
+    fi
     case "$copilot_cwd/" in
       "$copilot_sensitive/"*)
         echo "copilot: refusing launch because the workspace overlaps '$copilot_sensitive'" >&2

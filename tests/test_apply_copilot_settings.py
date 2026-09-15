@@ -34,13 +34,15 @@ class CopilotSettingsTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def apply(self, platform, home, sandbox_enabled=True):
+    def apply(self, platform, home, sandbox_enabled=True, copilot_home=None):
+        options = {"copilot_home": copilot_home} if copilot_home else {}
         settings_module.apply_settings(
             self.settings,
             self.subagents,
             home,
             platform,
             sandbox_enabled=sandbox_enabled,
+            **options,
         )
         return json.loads(self.settings.read_text(encoding="utf-8"))
 
@@ -123,6 +125,18 @@ class CopilotSettingsTests(unittest.TestCase):
             denied,
         )
         self.assertNotIn("/Users/tester/.ssh", denied)
+
+    def test_denies_sensitive_paths_in_managed_copilot_home(self):
+        result = self.apply(
+            "unix",
+            "/home/tester",
+            copilot_home="/var/work/tester/.copilot",
+        )
+        denied = result["sandbox"]["userPolicy"]["filesystem"]["deniedPaths"]
+
+        self.assertIn("/var/work/tester/.copilot/logs", denied)
+        self.assertIn("/var/work/tester/.copilot/permissions-config.json", denied)
+        self.assertIn("/var/work/tester/.copilot/session-state", denied)
 
     def test_disables_sandbox_on_unsupported_windows(self):
         result = self.apply(

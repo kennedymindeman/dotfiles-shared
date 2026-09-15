@@ -119,6 +119,42 @@ function Test-CopilotPathOverlap
         $rightPath.StartsWith($leftPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Resolve-CopilotPhysicalPath
+{
+    param([Parameter(Mandatory)][string]$Path)
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($fullPath)
+    $current = Get-Item -LiteralPath $root -Force
+    $relative = $fullPath.Substring($root.Length)
+    $parts = @($relative.Split(
+            [IO.Path]::DirectorySeparatorChar,
+            [StringSplitOptions]::RemoveEmptyEntries
+        ))
+    for ($index = 0; $index -lt $parts.Count; $index++)
+    {
+        $part = $parts[$index]
+        $candidate = Join-Path $current.FullName $part
+        if (-not (Test-Path -LiteralPath $candidate))
+        {
+            $remaining = [string]::Join(
+                [IO.Path]::DirectorySeparatorChar,
+                $parts[$index..($parts.Count - 1)]
+            )
+            return [IO.Path]::GetFullPath((Join-Path $current.FullName $remaining))
+        }
+        $current = Get-Item -LiteralPath $candidate -Force
+        $target = $current.ResolveLinkTarget($true)
+        if ($target)
+        {
+            $current = $target
+        }
+    }
+    return $current.FullName
+}
+
+$CopilotExpectedHome = $env:COPILOT_HOME
+
 function Get-CopilotPositionals
 {
     param([string[]]$Arguments)
@@ -219,9 +255,9 @@ function Get-CopilotLaunchBlockReason
         }
     }
 
-    if ($env:COPILOT_HOME)
+    if ($env:COPILOT_HOME -cne $CopilotExpectedHome)
     {
-        return 'COPILOT_HOME can select settings outside the hardened configuration'
+        return 'COPILOT_HOME changed after the hardened configuration loaded'
     }
 
     if ((Get-Location).Provider.Name -ne 'FileSystem')
@@ -230,8 +266,10 @@ function Get-CopilotLaunchBlockReason
     }
 
     $current = (Get-Location).ProviderPath
-    $homePath = [IO.Path]::GetFullPath($HOME).TrimEnd('\', '/')
-    $currentPath = [IO.Path]::GetFullPath($current).TrimEnd('\', '/')
+    $homePath = (Resolve-CopilotPhysicalPath $HOME).TrimEnd('\', '/')
+    $currentPath = (Resolve-CopilotPhysicalPath $current).TrimEnd('\', '/')
+    $copilotHomePath = Resolve-CopilotPhysicalPath $(if ($CopilotExpectedHome)
+        { $CopilotExpectedHome } else { "$HOME\.copilot" })
     if ($currentPath.Equals($homePath, [StringComparison]::OrdinalIgnoreCase) -or
         $homePath.StartsWith($currentPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))
     {
@@ -239,24 +277,26 @@ function Get-CopilotLaunchBlockReason
     }
 
     $sensitivePaths = @(
-        "$HOME\.aws"
-        "$HOME\.claude"
-        "$HOME\.codex"
-        "$HOME\.config\alerts"
-        "$HOME\.config\Bitwarden CLI"
-        "$HOME\.config\gh"
-        "$HOME\.copilot"
-        "$HOME\.gnupg"
-        "$HOME\.ssh"
-        "$HOME\AppData\Local\Bitwarden"
-        "$HOME\AppData\Roaming\Bitwarden"
-        "$HOME\AppData\Roaming\GitHub CLI"
+        "$homePath\.aws"
+        "$homePath\.claude"
+        "$homePath\.codex"
+        "$homePath\.config\alerts"
+        "$homePath\.config\Bitwarden CLI"
+        "$homePath\.config\gh"
+        "$homePath\.copilot"
+        $copilotHomePath
+        "$homePath\.gnupg"
+        "$homePath\.ssh"
+        "$homePath\AppData\Local\Bitwarden"
+        "$homePath\AppData\Roaming\Bitwarden"
+        "$homePath\AppData\Roaming\GitHub CLI"
     )
     foreach ($path in $sensitivePaths)
     {
-        if (Test-CopilotPathOverlap -Left $currentPath -Right $path)
+        $physicalPath = Resolve-CopilotPhysicalPath $path
+        if (Test-CopilotPathOverlap -Left $currentPath -Right $physicalPath)
         {
-            return "the workspace '$currentPath' overlaps sensitive path '$path'"
+            return "the workspace '$currentPath' overlaps sensitive path '$physicalPath'"
         }
     }
 
