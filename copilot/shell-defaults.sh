@@ -36,7 +36,7 @@ copilot() {
       copilot_bwrap_minor=${copilot_bwrap_rest%%.*}
       if [ -z "$copilot_bwrap_version" ] ||
         { [ "$copilot_bwrap_major" -lt 1 ] && [ "$copilot_bwrap_minor" -lt 5 ]; }; then
-        echo "copilot: warning: this Linux host cannot enforce the Copilot sandbox without bwrap 0.5.0 or newer" >&2
+        echo "copilot: warning: this Linux host cannot enforce the Copilot sandbox because bwrap 0.5.0 or newer is missing, failed, or reported an unusable version" >&2
       fi
       for copilot_sandbox_command in \
         slirp4netns \

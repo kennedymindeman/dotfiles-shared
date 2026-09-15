@@ -227,10 +227,11 @@ function Get-CopilotLaunchBlockReason
         $policyOutput = & $python (Join-Path $HOME '.config/dotfiles/check-copilot-policy.py') 2>&1
         if ($LASTEXITCODE -ne 0) { return "required managed sandbox policy could not be verified: $($policyOutput -join "`n")" }
         if ($policyOutput) {
-            Write-Warning ($policyOutput -join "`n") -WarningAction Continue
+            $policyWarning = ($policyOutput -join "`n") -replace '^copilot: warning:\s*', ''
+            Write-Warning "copilot: $policyWarning" -WarningAction Continue
         }
         if (-not (Test-CopilotSandboxSupported)) {
-            Write-Warning 'copilot: warning: this Windows host cannot enforce the work sandbox' -WarningAction Continue
+            Write-Warning 'copilot: this Windows host cannot enforce the work sandbox' -WarningAction Continue
         }
     }
 

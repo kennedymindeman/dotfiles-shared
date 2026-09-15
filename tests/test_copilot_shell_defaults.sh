@@ -305,7 +305,7 @@ if ! (
   echo "FAIL: unsupported bubblewrap version blocked launch" >&2
   exit 1
 fi
-grep -q 'without bwrap 0.5.0 or newer' "$tmp/sandbox-output"
+grep -q 'bwrap 0.5.0 or newer is missing, failed, or reported an unusable version' "$tmp/sandbox-output"
 grep -Fxq -- '--experimental' "$tmp/sandbox-output"
 
 cat > "$tmp/old-bin/bwrap" <<'EOF'
@@ -320,7 +320,7 @@ if ! (
   echo "FAIL: unparsable bubblewrap version blocked launch" >&2
   exit 1
 fi
-grep -q 'without bwrap 0.5.0 or newer' "$tmp/sandbox-output"
+grep -q 'bwrap 0.5.0 or newer is missing, failed, or reported an unusable version' "$tmp/sandbox-output"
 grep -Fxq -- '--experimental' "$tmp/sandbox-output"
 
 cat > "$tmp/old-bin/bwrap" <<'EOF'
@@ -336,7 +336,7 @@ if ! (
   echo "FAIL: failed bubblewrap probe blocked launch" >&2
   exit 1
 fi
-grep -q 'without bwrap 0.5.0 or newer' "$tmp/sandbox-output"
+grep -q 'bwrap 0.5.0 or newer is missing, failed, or reported an unusable version' "$tmp/sandbox-output"
 grep -Fxq -- '--experimental' "$tmp/sandbox-output"
 
 cat > "$tmp/old-bin/bwrap" <<'EOF'
