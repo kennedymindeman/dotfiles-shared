@@ -20,21 +20,23 @@ copilot() {
   case "$(uname -s)" in
     Darwin)
       if ! command -v sandbox-exec >/dev/null 2>&1; then
-        echo "copilot: refusing launch because this macOS host cannot enforce the Copilot sandbox" >&2
-        return 2
+        echo "copilot: warning: this macOS host cannot enforce the Copilot sandbox" >&2
       fi
       ;;
     Linux)
-      copilot_bwrap_version=$(
-        bwrap --version 2>/dev/null | sed -n 's/.* \([0-9][0-9.]*\)$/\1/p'
-      ) || :
+      copilot_bwrap_version=
+      if copilot_bwrap_output=$(bwrap --version 2>/dev/null); then
+        copilot_bwrap_version=$(
+          printf '%s\n' "$copilot_bwrap_output" |
+            sed -n 's/.* \([0-9][0-9.]*\)$/\1/p'
+        )
+      fi
       copilot_bwrap_major=${copilot_bwrap_version%%.*}
       copilot_bwrap_rest=${copilot_bwrap_version#*.}
       copilot_bwrap_minor=${copilot_bwrap_rest%%.*}
       if [ -z "$copilot_bwrap_version" ] ||
         { [ "$copilot_bwrap_major" -lt 1 ] && [ "$copilot_bwrap_minor" -lt 5 ]; }; then
-        echo "copilot: refusing launch because this Linux host requires bwrap 0.5.0 or newer" >&2
-        return 2
+        echo "copilot: warning: this Linux host cannot enforce the Copilot sandbox because bwrap 0.5.0 or newer is missing, failed, or reported an unusable version" >&2
       fi
       for copilot_sandbox_command in \
         slirp4netns \
@@ -46,28 +48,27 @@ copilot() {
         ip6tables-restore
       do
         if ! command -v "$copilot_sandbox_command" >/dev/null 2>&1; then
-          echo "copilot: refusing launch because this Linux host requires $copilot_sandbox_command for sandboxing" >&2
-          return 2
+          echo "copilot: warning: this Linux host cannot enforce the Copilot sandbox without $copilot_sandbox_command" >&2
         fi
       done
-      if ! slirp4netns --version >/dev/null 2>&1; then
-        echo "copilot: refusing launch because this Linux host requires slirp4netns for sandboxing" >&2
-        return 2
+      if command -v slirp4netns >/dev/null 2>&1 &&
+        ! slirp4netns --version >/dev/null 2>&1; then
+        echo "copilot: warning: this Linux host cannot enforce the Copilot sandbox because slirp4netns is unusable" >&2
       fi
-      if ! unshare --help 2>/dev/null | grep -q -- '--map-current-user' ||
-        ! unshare --help 2>/dev/null | grep -q -- '--keep-caps'; then
-        echo "copilot: refusing launch because this Linux host requires compatible util-linux 2.35+ sandbox tools" >&2
-        return 2
+      if command -v unshare >/dev/null 2>&1; then
+        if ! copilot_unshare_help=$(unshare --help 2>/dev/null) ||
+          ! printf '%s\n' "$copilot_unshare_help" | grep -q -- '--map-current-user' ||
+          ! printf '%s\n' "$copilot_unshare_help" | grep -q -- '--keep-caps'; then
+          echo "copilot: warning: this Linux host cannot enforce the Copilot sandbox without compatible util-linux 2.35+ tools" >&2
+        fi
       fi
       copilot_tun_device=${COPILOT_SANDBOX_TUN_DEVICE:-/dev/net/tun}
       if [ ! -r "$copilot_tun_device" ] || [ ! -w "$copilot_tun_device" ]; then
-        echo "copilot: refusing launch because this Linux host requires read/write access to /dev/net/tun" >&2
-        return 2
+        echo "copilot: warning: this Linux host cannot enforce the Copilot sandbox without read/write access to /dev/net/tun" >&2
       fi
       ;;
     *)
-      echo "copilot: refusing launch because this host cannot enforce the Copilot sandbox" >&2
-      return 2
+      echo "copilot: warning: this host cannot enforce the Copilot sandbox" >&2
       ;;
   esac
 

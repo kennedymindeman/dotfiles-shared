@@ -602,12 +602,27 @@ class LinkTests(unittest.TestCase):
 
 
 class PolicyTests(unittest.TestCase):
-    def test_policy_requires_exact_mandatory_settings(self):
+    def load_policy_module(self):
         spec = importlib.util.spec_from_file_location(
             "policy", ROOT / "bin/check-copilot-policy.py"
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        return module
+
+    def test_missing_policy_warns_and_continues(self):
+        module = self.load_policy_module()
+        output = io.StringIO()
+        with (
+            patch.object(Path, "lstat", side_effect=FileNotFoundError),
+            contextlib.redirect_stderr(output),
+        ):
+            module.main()
+        self.assertIn("warning", output.getvalue())
+        self.assertIn("missing", output.getvalue())
+
+    def test_policy_requires_exact_mandatory_settings(self):
+        module = self.load_policy_module()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "policy.json"
             policy = {

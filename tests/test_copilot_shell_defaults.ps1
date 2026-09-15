@@ -14,6 +14,12 @@ $repo = Split-Path $PSScriptRoot -Parent
 . "$repo\copilot\shell-defaults.ps1"
 
 $project = $repo
+function Add-Type { throw 'sandbox probe prerequisite unavailable' }
+if (Test-CopilotSandboxSupported) {
+    throw 'failed sandbox probe reported support'
+}
+Remove-Item Function:Add-Type
+
 function Test-CopilotSandboxSupported { return $true }
 
 if (Test-CopilotSandboxCapabilities -Capabilities 1) {
@@ -238,15 +244,59 @@ finally {
 Write-Output 'ok: Copilot PowerShell defaults enforce the hardened launch policy'
 
 $previousEnvironment = $env:DOTFILES_ENV
+$previousWarningPreference = $WarningPreference
 try {
     $env:DOTFILES_ENV = 'work'
+    $WarningPreference = 'Stop'
+    function Test-CopilotSandboxSupported { return $true }
+    function Find-DotfilesPython { return 'Test-PolicyPython' }
+    function Test-PolicyPython
+    {
+        Write-Output 'copilot: warning: managed sandbox policy is missing'
+        $global:LASTEXITCODE = 0
+    }
+    $policyMessages = @(Get-CopilotLaunchBlockReason -Arguments @('--version') 3>&1)
+    $reason = $policyMessages | Where-Object {
+        $_ -isnot [System.Management.Automation.WarningRecord]
+    }
+    if ($reason) {
+        throw "missing policy blocked launch: $($reason -join "`n")"
+    }
+    if (($policyMessages -join "`n") -notmatch 'managed sandbox policy is missing') {
+        throw 'missing policy warning was not shown'
+    }
+
+    function Test-CopilotSandboxSupported { return $false }
+    $sandboxMessages = @(Get-CopilotLaunchBlockReason -Arguments @('--version') 3>&1)
+    $reason = $sandboxMessages | Where-Object {
+        $_ -isnot [System.Management.Automation.WarningRecord]
+    }
+    if ($reason) {
+        throw "unsupported Windows sandbox blocked launch: $($reason -join "`n")"
+    }
+    if (($sandboxMessages -join "`n") -notmatch 'cannot enforce the work sandbox') {
+        throw 'unsupported Windows sandbox warning was not shown'
+    }
+
+    function Test-CopilotSandboxSupported { return $true }
+    function Test-PolicyPython
+    {
+        Write-Output 'managed policy must set sandbox.enabled to true'
+        $global:LASTEXITCODE = 1
+    }
+    if ((Get-CopilotLaunchBlockReason -Arguments @('--version')) -notmatch 'could not be verified') {
+        throw 'invalid managed policy did not block launch'
+    }
+
     function Find-DotfilesPython { return $null }
     if ((Get-CopilotLaunchBlockReason -Arguments @('--version')) -notmatch 'Python is required') {
         throw 'work launch proceeded without policy verification'
     }
 } finally {
     Remove-Item Function:Find-DotfilesPython
+    Remove-Item Function:Test-PolicyPython
     $env:DOTFILES_ENV = $previousEnvironment
+    $WarningPreference = $previousWarningPreference
 }
 
 } finally {
@@ -254,3 +304,4 @@ try {
     $env:DOTFILES_ENV = $originalDotfilesEnvironment
     $env:COPILOT_HOME = $originalCopilotHome
 }
+$global:LASTEXITCODE = 0
