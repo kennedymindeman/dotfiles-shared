@@ -83,7 +83,7 @@ class Installer:
             raise TypeError(f"invalid ownership state: {self.state_path}")
         previous_copilot_home = Path(
             self.old.get("copilot_home", home / ".copilot")
-        )
+        ).resolve(strict=False)
         if self.old["files"] and os.path.normcase(
             os.path.abspath(previous_copilot_home)
         ) != os.path.normcase(os.path.abspath(self.copilot_home)):

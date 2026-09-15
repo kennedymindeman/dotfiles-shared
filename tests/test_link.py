@@ -194,6 +194,34 @@ class LinkTests(unittest.TestCase):
         denied = settings["sandbox"]["userPolicy"]["filesystem"]["deniedPaths"]
         self.assertIn(str(copilot_home.resolve() / "session-state"), denied)
 
+    def test_legacy_state_under_aliased_home_can_relink(self):
+        physical_home = self.base / "physical-home"
+        physical_home.mkdir()
+        self.home = self.base / "aliased-home"
+        if os.name == "nt":
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(self.home), str(physical_home)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode:
+                self.skipTest("junction creation is unavailable")
+        else:
+            self.home.symlink_to(physical_home, target_is_directory=True)
+        self.apply()
+
+        state_path = physical_home / ".config/dotfiles/state.json"
+        state = json.loads(state_path.read_text())
+        del state["copilot_home"]
+        state_path.write_text(json.dumps(state))
+
+        self.plan().apply(False)
+        updated = json.loads(state_path.read_text())
+        self.assertEqual(
+            updated["copilot_home"],
+            str((physical_home / ".copilot").resolve()),
+        )
+
     def test_changed_copilot_home_requires_review(self):
         first = self.base / "managed-copilot-first"
         second = self.base / "managed-copilot-second"
