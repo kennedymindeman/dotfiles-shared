@@ -304,3 +304,4 @@ try {
     $env:DOTFILES_ENV = $originalDotfilesEnvironment
     $env:COPILOT_HOME = $originalCopilotHome
 }
+$global:LASTEXITCODE = 0
