@@ -41,6 +41,12 @@ UNIX_SENSITIVE_PATHS = (
     "Library/Application Support/Bitwarden CLI",
 )
 
+COPILOT_SENSITIVE_PATHS = (
+    "logs",
+    "permissions-config.json",
+    "session-state",
+)
+
 
 def require_object(parent, key, label):
     value = parent.get(key)
@@ -74,7 +80,14 @@ def merge_unique(existing, additions):
     return list(dict.fromkeys([*existing, *additions]))
 
 
-def build_settings(existing, subagents, home, platform, sandbox_enabled=True):
+def build_settings(
+    existing,
+    subagents,
+    home,
+    platform,
+    sandbox_enabled=True,
+    copilot_home=None,
+):
     if not isinstance(existing, dict):
         raise ValueError("Copilot settings must be a JSON object")
     if not isinstance(subagents, dict) or any(
@@ -148,9 +161,24 @@ def build_settings(existing, subagents, home, platform, sandbox_enabled=True):
     platform_paths = (
         WINDOWS_SENSITIVE_PATHS if platform == "windows" else UNIX_SENSITIVE_PATHS
     )
+    if copilot_home is None:
+        copilot_home = home_path(home, ".copilot", platform)
+    path_class = PureWindowsPath if platform == "windows" else PurePosixPath
+    copilot_home_path = path_class(copilot_home)
+    if not copilot_home_path.is_absolute():
+        raise ValueError("--copilot-home must be an absolute path")
     filesystem["deniedPaths"] = merge_unique(
         denied_paths,
-        [home_path(home, path, platform) for path in (*SENSITIVE_PATHS, *platform_paths)],
+        [
+            *[
+                home_path(home, path, platform)
+                for path in (*SENSITIVE_PATHS, *platform_paths)
+            ],
+            *[
+                str(copilot_home_path.joinpath(*path.split("/")))
+                for path in COPILOT_SENSITIVE_PATHS
+            ],
+        ],
     )
 
     network = require_object(user_policy, "network", "sandbox.userPolicy.network")
@@ -202,6 +230,7 @@ def apply_settings(
     home,
     platform,
     sandbox_enabled=True,
+    copilot_home=None,
 ):
     settings = load_json(settings_path, "Copilot settings") if settings_path.exists() else {}
     subagents = load_json(subagents_path, "subagent settings")
@@ -211,6 +240,7 @@ def apply_settings(
         home,
         platform,
         sandbox_enabled=sandbox_enabled,
+        copilot_home=copilot_home,
     )
     write_settings(settings_path, updated)
 
@@ -220,6 +250,7 @@ def main(argv=None):
     parser.add_argument("--settings", required=True, type=Path)
     parser.add_argument("--subagents", required=True, type=Path)
     parser.add_argument("--home", required=True)
+    parser.add_argument("--copilot-home")
     parser.add_argument("--platform", required=True, choices=("unix", "windows"))
     parser.add_argument(
         "--sandbox-enabled",
@@ -234,6 +265,7 @@ def main(argv=None):
             args.home,
             args.platform,
             sandbox_enabled=args.sandbox_enabled == "true",
+            copilot_home=args.copilot_home,
         )
     except (OSError, ValueError) as error:
         parser.exit(1, f"apply-copilot-settings: {error}\n")

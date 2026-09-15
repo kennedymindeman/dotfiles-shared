@@ -4,12 +4,13 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -63,8 +64,9 @@ class LinkTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
-    def plan(self, profile="work", overlay=None):
+    def plan(self, profile="work", overlay=None, copilot_home=None):
         platform = "windows" if os.name == "nt" else "linux"
+        options = {"copilot_home": copilot_home} if copilot_home else {}
         return link.plan(
             self.repo,
             self.home,
@@ -72,6 +74,7 @@ class LinkTests(unittest.TestCase):
             platform,
             overlay,
             str(self.home / "Documents/PowerShell/profile.ps1"),
+            **options,
         )
 
     def apply(self, profile="work", overlay=None, dry=False):
@@ -123,6 +126,38 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(list(outside.iterdir()), [])
 
+    @unittest.skipUnless(os.name == "nt", "junctions are Windows-specific")
+    def test_backup_junction_cannot_redirect_private_configuration(self):
+        outside = self.base / "outside-backups"
+        outside.mkdir()
+        backups = self.home / ".config/dotfiles/backups"
+        backups.parent.mkdir(parents=True)
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(backups), str(outside)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode:
+            self.skipTest("junction creation is unavailable")
+
+        self.write(self.home / ".gitconfig", "# existing private settings\n")
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "symlinked backup"):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_unavailable_reparse_target_is_redirecting(self):
+        details = Mock(
+            st_mode=stat.S_IFDIR,
+            st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+        )
+        with (
+            patch.object(link.os, "name", "nt"),
+            patch.object(link.os, "lstat", return_value=details),
+        ):
+            self.assertTrue(link.is_redirecting_link(self.base / "unavailable"))
+
     def test_dry_run_writes_nothing(self):
         self.apply(dry=True)
         self.assertEqual(self.snapshot(), {})
@@ -145,6 +180,113 @@ class LinkTests(unittest.TestCase):
         before = self.snapshot()
         self.apply()
         self.assertEqual(before, self.snapshot())
+
+    def test_managed_copilot_home_receives_configuration(self):
+        copilot_home = self.base / "managed-copilot"
+        self.plan(copilot_home=copilot_home).apply(False)
+
+        self.assertFalse((self.home / ".copilot").exists())
+        self.assertIn(
+            "Write clearly.",
+            (copilot_home / "copilot-instructions.md").read_text(),
+        )
+        settings = json.loads((copilot_home / "settings.json").read_text())
+        denied = settings["sandbox"]["userPolicy"]["filesystem"]["deniedPaths"]
+        self.assertIn(str(copilot_home.resolve() / "session-state"), denied)
+
+    def test_legacy_state_under_aliased_home_can_relink(self):
+        physical_home = self.base / "physical-home"
+        physical_home.mkdir()
+        self.home = self.base / "aliased-home"
+        if os.name == "nt":
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(self.home), str(physical_home)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode:
+                self.skipTest("junction creation is unavailable")
+        else:
+            self.home.symlink_to(physical_home, target_is_directory=True)
+        self.apply()
+
+        state_path = physical_home / ".config/dotfiles/state.json"
+        state = json.loads(state_path.read_text())
+        del state["copilot_home"]
+        state_path.write_text(json.dumps(state))
+
+        self.plan().apply(False)
+        updated = json.loads(state_path.read_text())
+        self.assertEqual(
+            updated["copilot_home"],
+            str((physical_home / ".copilot").resolve()),
+        )
+
+    def test_changed_copilot_home_requires_review(self):
+        first = self.base / "managed-copilot-first"
+        second = self.base / "managed-copilot-second"
+        self.plan(copilot_home=first).apply(False)
+        before = self.snapshot()
+
+        with self.assertRaisesRegex(ValueError, "COPILOT_HOME changed"):
+            self.plan(copilot_home=second)
+        self.assertEqual(self.snapshot(), before)
+        self.assertTrue((first / "settings.json").exists())
+        self.assertFalse(second.exists())
+
+    @unittest.skipIf(os.name == "nt", "symlink creation requires Windows privileges")
+    def test_symlinked_copilot_home_cannot_redirect_writes(self):
+        outside = self.base / "outside-copilot"
+        outside.mkdir()
+        (self.home / ".copilot").symlink_to(outside, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "symlinked configuration directory"):
+            self.plan()
+        self.assertEqual(list(outside.iterdir()), [])
+
+    @unittest.skipUnless(os.name == "nt", "junctions are Windows-specific")
+    def test_junctioned_copilot_home_cannot_redirect_writes(self):
+        outside = self.base / "outside-copilot"
+        outside.mkdir()
+        result = subprocess.run(
+            [
+                "cmd",
+                "/c",
+                "mklink",
+                "/J",
+                str(self.home / ".copilot"),
+                str(outside),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode:
+            self.skipTest("junction creation is unavailable")
+
+        with self.assertRaisesRegex(ValueError, "symlinked configuration directory"):
+            self.plan()
+        self.assertEqual(list(outside.iterdir()), [])
+
+    @unittest.skipUnless(os.name == "nt", "junctions are Windows-specific")
+    def test_copilot_home_beneath_junction_is_pinned_to_physical_path(self):
+        outside = self.base / "outside-parent"
+        outside.mkdir()
+        junction = self.base / "junction-parent"
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode:
+            self.skipTest("junction creation is unavailable")
+
+        installer = self.plan(copilot_home=junction / "managed-copilot")
+        self.assertEqual(
+            installer.copilot_home,
+            (outside / "managed-copilot").resolve(),
+        )
+        installer.apply(False)
+        self.assertTrue((outside / "managed-copilot/settings.json").exists())
 
     def test_unknown_file_blocks_entire_install(self):
         self.write(self.home / ".config/shared.txt", "locally customized")

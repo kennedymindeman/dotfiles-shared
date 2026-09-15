@@ -74,6 +74,10 @@ git config --global user.email 'your.work@example.com'
 
 Use a repository-local identity or your employer's include rules when appropriate.
 
+If the host sets `COPILOT_HOME`, the linker installs Copilot instructions and
+settings there. The shell launcher pins the inherited location and rejects later
+overrides.
+
 ## Enable Copilot for work
 
 The work launcher refuses to start without a local mandatory sandbox policy.
