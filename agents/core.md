@@ -16,9 +16,6 @@ For changed interactions, record a short passing flow. For layout changes, compa
 # prAuthoring
 Title: a standalone imperative sentence. Body: why first (issue link + problem), then what as short bullets, then Validation (commands + results) on every code PR; caveats and intentional exclusions near the top. Teach what the diff can't; never re-narrate the diff or how you produced it; keep it shorter than the diff on small changes. Past ~200 lines, add a "start reading at" pointer. Prefer stacked single-purpose PRs; say so when a request bundles more than ~2 concerns.
 
-# thinkingLevel
-Use the default reasoning effort for routine work. Increase it when decisions are costly to reverse or the evidence shows that more analysis is needed.
-
 # apiAccess
 For an API I use repeatedly, wrap it as an MCP server. For a one-off, make the direct CLI/API call with the credential I hand you rather than driving the browser or writing a throwaway script. When I hand you a credential or CLI path, use it; if one plausibly exists, ask for it.
 
