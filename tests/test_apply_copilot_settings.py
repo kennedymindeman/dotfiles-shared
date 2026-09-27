@@ -138,6 +138,66 @@ class CopilotSettingsTests(unittest.TestCase):
         self.assertIn("/var/work/tester/.copilot/permissions-config.json", denied)
         self.assertIn("/var/work/tester/.copilot/session-state", denied)
 
+    def test_overlay_sensitive_paths_are_denied_on_both_platforms(self):
+        sensitive = self.root / "sensitive.json"
+        sensitive.write_text(
+            '{"env": ["EXAMPLE_TOKEN"], "paths": [".config/example"]}',
+            encoding="utf-8",
+        )
+        for platform, home, expected in (
+            ("unix", "/Users/tester", "/Users/tester/.config/example"),
+            ("windows", r"C:\Users\tester", r"C:\Users\tester\.config\example"),
+        ):
+            settings_module.apply_settings(
+                self.settings, self.subagents, home, platform, sensitive_path=sensitive
+            )
+            result = json.loads(self.settings.read_text(encoding="utf-8"))
+            denied = result["sandbox"]["userPolicy"]["filesystem"]["deniedPaths"]
+            self.assertIn(expected, denied)
+            self.settings.unlink()
+
+    def test_missing_overlay_sensitive_file_adds_nothing(self):
+        without = self.apply("unix", "/Users/tester")
+        self.settings.unlink()
+        settings_module.apply_settings(
+            self.settings,
+            self.subagents,
+            "/Users/tester",
+            "unix",
+            sensitive_path=self.root / "missing.json",
+        )
+        self.assertEqual(
+            json.loads(self.settings.read_text(encoding="utf-8")), without
+        )
+        self.assertEqual(
+            settings_module.load_sensitive(self.root / "missing.json"),
+            {"env": [], "paths": []},
+        )
+
+    def test_rejects_invalid_overlay_sensitive_file(self):
+        sensitive = self.root / "sensitive.json"
+        for content in (
+            "{not json",
+            "[]",
+            '{"env": "EXAMPLE_TOKEN"}',
+            '{"env": ["EXAMPLE-TOKEN"]}',
+            '{"paths": [1]}',
+            '{"paths": ["/etc/example"]}',
+            '{"paths": ["../example"]}',
+            '{"paths": [".config\\\\example"]}',
+            '{"path": [".config/example"]}',
+        ):
+            sensitive.write_text(content, encoding="utf-8")
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                settings_module.apply_settings(
+                    self.settings,
+                    self.subagents,
+                    "/Users/tester",
+                    "unix",
+                    sensitive_path=sensitive,
+                )
+            self.assertFalse(self.settings.exists())
+
     def test_disables_sandbox_on_unsupported_windows(self):
         result = self.apply(
             "windows",
