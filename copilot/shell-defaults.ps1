@@ -28,9 +28,48 @@ $CopilotSecretEnvironmentVariables = @(
     'NPM_TOKEN'
     'OPENAI_API_KEY'
     'PYPI_TOKEN'
-    'TELEGRAM_TOKEN'
-    'TS_OAUTH_CLIENT_SECRET'
 )
+
+# Overlay format: {"env": ["NAME"], "paths": ["home/relative/path"]}.
+function Get-CopilotOverlaySensitive
+{
+    $extras = [pscustomobject]@{ env = @(); paths = @() }
+    if (-not $env:DOTFILES_PRIVATE_DIR) { return $extras }
+    $file = Join-Path $env:DOTFILES_PRIVATE_DIR 'copilot/sensitive.json'
+    if (-not (Test-Path $file)) { return $extras }
+    try
+    {
+        $data = Get-Content -LiteralPath $file -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch
+    {
+        throw "$file is not readable JSON: $($_.Exception.Message)"
+    }
+    if ($data -isnot [System.Management.Automation.PSCustomObject] -or
+        @($data.PSObject.Properties.Name | Where-Object { $_ -cnotin @('env', 'paths') }).Count)
+    {
+        throw "$file must be an object with only env and paths"
+    }
+    foreach ($key in @('env', 'paths'))
+    {
+        if ($data.PSObject.Properties.Name -cnotcontains $key) { continue }
+        $values = $data.$key
+        $valid = $values -is [array]
+        foreach ($value in @($values))
+        {
+            $valid = $valid -and $value -is [string] -and $(if ($key -eq 'env')
+                { $value -cmatch '^[A-Za-z_][A-Za-z0-9_]*$' }
+                else
+                { $value -notmatch '[\\:\n]' -and -not @($value.Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count })
+        }
+        if (-not $valid)
+        {
+            throw "$file $key must be an array of $(if ($key -eq 'env') { 'variable names' } else { 'home-relative paths using /' })"
+        }
+        $extras.$key = @($values)
+    }
+    return $extras
+}
 
 function Test-CopilotSandboxCapabilities
 {
@@ -279,11 +318,18 @@ function Get-CopilotLaunchBlockReason
         return "the workspace '$currentPath' contains the home directory"
     }
 
+    try
+    {
+        $overlaySensitive = Get-CopilotOverlaySensitive
+    }
+    catch
+    {
+        return $_.Exception.Message
+    }
     $sensitivePaths = @(
         "$homePath\.aws"
         "$homePath\.claude"
         "$homePath\.codex"
-        "$homePath\.config\alerts"
         "$homePath\.config\Bitwarden CLI"
         "$homePath\.config\gh"
         "$homePath\.copilot"
@@ -293,7 +339,7 @@ function Get-CopilotLaunchBlockReason
         "$homePath\AppData\Local\Bitwarden"
         "$homePath\AppData\Roaming\Bitwarden"
         "$homePath\AppData\Roaming\GitHub CLI"
-    )
+    ) + @($overlaySensitive.paths | ForEach-Object { Join-Path $homePath ($_ -replace '/', '\') })
     foreach ($path in $sensitivePaths)
     {
         $physicalPath = Resolve-CopilotPhysicalPath $path
@@ -407,7 +453,7 @@ function copilot
         '--disable-builtin-mcps'
         '--no-remote'
         '--no-remote-export'
-        "--secret-env-vars=$($CopilotSecretEnvironmentVariables -join ',')"
+        "--secret-env-vars=$(@($CopilotSecretEnvironmentVariables) + (Get-CopilotOverlaySensitive).env -join ',')"
     )
     $defaults += $CopilotDeniedTools | ForEach-Object { "--deny-tool=$_" }
     & copilot.exe @defaults @args

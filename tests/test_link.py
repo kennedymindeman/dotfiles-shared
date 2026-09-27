@@ -466,6 +466,22 @@ class LinkTests(unittest.TestCase):
         self.assertNotIn("gitconfig.work", (self.home / ".gitconfig").read_text())
         self.assertIn("Follow employer rules", (self.home / "AGENTS.md").read_text())
 
+    def test_overlay_sensitive_paths_reach_copilot_settings(self):
+        self.write(
+            self.overlay / "copilot/sensitive.json",
+            '{"env": ["EXAMPLE_TOKEN"], "paths": [".config/example"]}',
+        )
+        self.apply("home", self.overlay)
+        settings = json.loads((self.home / ".copilot/settings.json").read_text())
+        denied = settings["sandbox"]["userPolicy"]["filesystem"]["deniedPaths"]
+        self.assertIn(str(self.home / ".config/example"), denied)
+
+    def test_invalid_overlay_sensitive_file_fails_before_writes(self):
+        self.write(self.overlay / "copilot/sensitive.json", '{"env": "EXAMPLE_TOKEN"}')
+        with self.assertRaisesRegex(ValueError, "sensitive.json env must be"):
+            self.apply("home", self.overlay)
+        self.assertEqual(self.snapshot(), {})
+
     def test_overlay_cannot_replace_shared_or_generated_configuration(self):
         overlay = self.work_overlay()
         for relative in (

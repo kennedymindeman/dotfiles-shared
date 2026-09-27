@@ -1,7 +1,9 @@
 # Keep tests independent of a work profile already installed on the host.
 $originalDotfilesEnvironment = $env:DOTFILES_ENV
 $originalCopilotHome = $env:COPILOT_HOME
+$originalPrivateDirectory = $env:DOTFILES_PRIVATE_DIR
 $env:DOTFILES_ENV = 'home'
+Remove-Item Env:DOTFILES_PRIVATE_DIR -ErrorAction SilentlyContinue
 $env:COPILOT_HOME = Join-Path $HOME '.managed-copilot-test'
 function Test-Path {
     param([Alias('LiteralPath')][string]$Path)
@@ -161,6 +163,43 @@ try {
     if ($CapturedCopilotArgs -contains '--deny-tool=shell(git push)') {
         throw 'git push remains permanently denied'
     }
+    if (($CapturedCopilotArgs -join "`n") -match 'EXAMPLE_TOKEN') {
+        throw 'secret variables were added without an overlay'
+    }
+
+    $overlay = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid())
+    New-Item -ItemType Directory -Path (Join-Path $overlay 'copilot') | Out-Null
+    $sensitiveFile = Join-Path $overlay 'copilot/sensitive.json'
+    try {
+        $env:DOTFILES_PRIVATE_DIR = $overlay
+        Set-Content -LiteralPath $sensitiveFile -Value '{"env": ["EXAMPLE_TOKEN"], "paths": [".config/example"]}'
+        copilot --version
+        if ($CapturedCopilotArgs -notcontains "--secret-env-vars=$($CopilotSecretEnvironmentVariables -join ','),EXAMPLE_TOKEN") {
+            throw 'overlay secret variable was not passed to Copilot'
+        }
+        $script:TestWorkspace = "$HOME\.config\example\project"
+        function Get-Location {
+            [pscustomobject]@{ Provider = @{ Name = 'FileSystem' }; ProviderPath = $script:TestWorkspace }
+        }
+        try {
+            if ((Get-CopilotLaunchBlockReason -Arguments @('--version')) -notmatch 'overlaps sensitive path') {
+                throw 'overlay sensitive workspace was allowed'
+            }
+        }
+        finally {
+            Remove-Item Function:\Get-Location
+        }
+        foreach ($content in @('{not json', '{"env": "EXAMPLE_TOKEN"}', '{"paths": ["../example"]}')) {
+            Set-Content -LiteralPath $sensitiveFile -Value $content
+            if ((Get-CopilotLaunchBlockReason -Arguments @('--version')) -notmatch 'sensitive\.json') {
+                throw "invalid overlay sensitive file was allowed: $content"
+            }
+        }
+    }
+    finally {
+        Remove-Item Env:DOTFILES_PRIVATE_DIR -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $overlay -Recurse -Force
+    }
 }
 finally {
     Pop-Location
@@ -303,5 +342,6 @@ try {
     Remove-Item Function:Test-Path
     $env:DOTFILES_ENV = $originalDotfilesEnvironment
     $env:COPILOT_HOME = $originalCopilotHome
+    $env:DOTFILES_PRIVATE_DIR = $originalPrivateDirectory
 }
 $global:LASTEXITCODE = 0

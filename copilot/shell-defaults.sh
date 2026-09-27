@@ -120,20 +120,47 @@ copilot() {
       ;;
   esac
 
-  for copilot_sensitive in \
-    "$copilot_home/.aws" \
-    "$copilot_home/.claude" \
-    "$copilot_home/.codex" \
-    "$copilot_home/.config/alerts" \
-    "$copilot_home/.config/Bitwarden CLI" \
-    "$copilot_home/.config/gh" \
-    "$copilot_home/.copilot" \
-    "$copilot_config_home" \
-    "$copilot_home/.gnupg" \
-    "$copilot_home/.ssh" \
-    "$copilot_home/Library/Application Support/Bitwarden" \
-    "$copilot_home/Library/Application Support/Bitwarden CLI"
-  do
+  copilot_extra_env=
+  copilot_extra_paths=
+  copilot_sensitive_file=${DOTFILES_PRIVATE_DIR:+$DOTFILES_PRIVATE_DIR/copilot/sensitive.json}
+  if [ -n "$copilot_sensitive_file" ] && [ -e "$copilot_sensitive_file" ]; then
+    # Overlay format: {"env": ["NAME"], "paths": ["home/relative/path"]}.
+    copilot_sensitive_script='
+import json, re, sys
+key, path, home = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8-sig") as stream:
+        data = json.load(stream)
+except (OSError, ValueError) as error:
+    sys.exit(f"copilot: refusing launch because {path} is not readable JSON: {error}")
+if not isinstance(data, dict) or set(data) - {"env", "paths"}:
+    sys.exit(f"copilot: refusing launch because {path} must be an object with only env and paths")
+values = data.get(key, [])
+def valid(value):
+    if key == "env":
+        return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value)
+    return not re.search(r"[\\:\n]", value) and all(
+        part not in ("", ".", "..") for part in value.split("/"))
+if not isinstance(values, list) or not all(
+        isinstance(value, str) and valid(value) for value in values):
+    sys.exit(f"copilot: refusing launch because {path} {key} must be an array of "
+             + ("variable names" if key == "env" else "home-relative paths using /"))
+print(",".join(values) if key == "env" else "\n".join(f"{home}/{value}" for value in values))
+'
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "copilot: refusing launch because python3 is required to read $copilot_sensitive_file" >&2
+      return 2
+    fi
+    copilot_extra_env=$(
+      python3 -c "$copilot_sensitive_script" env "$copilot_sensitive_file" "$copilot_home"
+    ) || return 2
+    copilot_extra_paths=$(
+      python3 -c "$copilot_sensitive_script" paths "$copilot_sensitive_file" "$copilot_home"
+    ) || return 2
+  fi
+
+  while IFS= read -r copilot_sensitive; do
+    [ -n "$copilot_sensitive" ] || continue
     if [ -d "$copilot_sensitive" ]; then
       copilot_sensitive=$(CDPATH= cd -- "$copilot_sensitive" && pwd -P) || {
         echo "copilot: refusing launch because sensitive path '$copilot_sensitive' cannot be resolved" >&2
@@ -152,7 +179,20 @@ copilot() {
         return 2
         ;;
     esac
-  done
+  done <<EOF
+$copilot_home/.aws
+$copilot_home/.claude
+$copilot_home/.codex
+$copilot_home/.config/Bitwarden CLI
+$copilot_home/.config/gh
+$copilot_home/.copilot
+$copilot_config_home
+$copilot_home/.gnupg
+$copilot_home/.ssh
+$copilot_home/Library/Application Support/Bitwarden
+$copilot_home/Library/Application Support/Bitwarden CLI
+$copilot_extra_paths
+EOF
 
   copilot_position_1=
   copilot_position_2=
@@ -224,7 +264,7 @@ copilot() {
     --disable-builtin-mcps \
     --no-remote \
     --no-remote-export \
-    --secret-env-vars='ANTHROPIC_API_KEY,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,AZURE_CLIENT_SECRET,BW_SESSION,COPILOT_GITHUB_TOKEN,GH_TOKEN,GITHUB_TOKEN,NPM_TOKEN,OPENAI_API_KEY,PYPI_TOKEN,TELEGRAM_TOKEN,TS_OAUTH_CLIENT_SECRET' \
+    --secret-env-vars="ANTHROPIC_API_KEY,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,AZURE_CLIENT_SECRET,BW_SESSION,COPILOT_GITHUB_TOKEN,GH_TOKEN,GITHUB_TOKEN,NPM_TOKEN,OPENAI_API_KEY,PYPI_TOKEN${copilot_extra_env:+,$copilot_extra_env}" \
     --deny-tool='shell(bw)' \
     --deny-tool='shell(rbw)' \
     --deny-tool='shell(git reset --hard)' \

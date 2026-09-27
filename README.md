@@ -184,6 +184,7 @@ These optional files load after the shared configuration; `<profile>` is exactly
 | `tmux.<profile>.conf` | Sourced after shared tmux on Unix |
 | `powershell/profile.<profile>.ps1` | Sourced after shared PowerShell setup on Windows |
 | `copilot/subagents.json` | Merged subagent fields; unchanged owned fields removed when no longer configured |
+| `copilot/sensitive.json` | Extra secrets for Copilot, e.g. `{"env": ["EXAMPLE_TOKEN"], "paths": [".config/example"]}`; `env` names join `--secret-env-vars`, home-relative `/`-separated `paths` join the sandbox deny list and launch refusal; invalid files fail linking and refuse launch |
 
 Shell blocks set `DOTFILES_ENV` and `DOTFILES_PRIVATE_DIR` to the selected profile
 and overlay; they clear `DOTFILES_PRIVATE_DIR` when no overlay is selected. Keep

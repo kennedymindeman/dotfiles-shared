@@ -600,6 +600,11 @@ def plan(
         str(home),
         "windows" if platform == "windows" else "unix",
         copilot_home=str(installer.copilot_home),
+        sensitive_paths=(
+            module.load_sensitive(overlay / "copilot/sensitive.json")["paths"]
+            if overlay
+            else ()
+        ),
     )
     updated["footer"]["showUsername"] = True
     data = (json.dumps(updated, indent=2) + "\n").encode()

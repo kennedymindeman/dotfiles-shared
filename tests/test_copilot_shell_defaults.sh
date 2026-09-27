@@ -2,7 +2,7 @@
 set -eu
 
 export DOTFILES_ENV=home
-unset COPILOT_HOME
+unset COPILOT_HOME DOTFILES_PRIVATE_DIR
 repo=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 shell=$(command -v sh)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-copilot-shell-defaults.XXXXXX")
@@ -60,6 +60,11 @@ if printf '%s\n' "$output" | grep -q -- '--assisted-approval'; then
 fi
 if printf '%s\n' "$output" | grep -Fqx -- '--deny-tool=shell(git push)'; then
   echo "FAIL: git push remains permanently denied" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$output" | grep -q 'EXAMPLE_TOKEN'; then
+  echo "FAIL: secret variables were added without an overlay" >&2
   exit 1
 fi
 
@@ -260,6 +265,43 @@ if (
   exit 1
 fi
 grep -q 'session telemetry' "$tmp/environment-output"
+
+mkdir -p "$tmp/overlay/copilot" "$tmp/home/.config/example/project"
+printf '%s\n' '{"env": ["EXAMPLE_TOKEN"], "paths": [".config/example"]}' \
+  >"$tmp/overlay/copilot/sensitive.json"
+output=$(
+  cd "$tmp/home/projects/demo"
+  HOME="$tmp/home" PATH="$tmp/bin:$PATH" DOTFILES_PRIVATE_DIR="$tmp/overlay" sh -c \
+    '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
+)
+printf '%s\n' "$output" | grep -q -- '^--secret-env-vars=.*,PYPI_TOKEN,EXAMPLE_TOKEN$'
+if (
+  cd "$tmp/home/.config/example/project"
+  HOME="$tmp/home" PATH="$tmp/bin:$PATH" DOTFILES_PRIVATE_DIR="$tmp/overlay" sh -c \
+    '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
+) >"$tmp/sensitive-output" 2>&1; then
+  echo "FAIL: overlay sensitive workspace was allowed" >&2
+  exit 1
+fi
+grep -q 'workspace overlaps' "$tmp/sensitive-output"
+
+for content in '{not json' '{"env": "EXAMPLE_TOKEN"}' '{"paths": ["../example"]}'
+do
+  printf '%s\n' "$content" >"$tmp/overlay/copilot/sensitive.json"
+  if (
+    cd "$tmp/home/projects/demo"
+    HOME="$tmp/home" PATH="$tmp/bin:$PATH" DOTFILES_PRIVATE_DIR="$tmp/overlay" sh -c \
+      '. "$1/copilot/shell-defaults.sh"; copilot --version' sh "$repo"
+  ) >"$tmp/overlay-output" 2>&1; then
+    echo "FAIL: invalid overlay sensitive file was allowed: $content" >&2
+    exit 1
+  fi
+  grep -q 'refusing launch because .*sensitive.json' "$tmp/overlay-output"
+  if grep -q -- '--experimental' "$tmp/overlay-output"; then
+    echo "FAIL: Copilot launched with an invalid overlay sensitive file" >&2
+    exit 1
+  fi
+done
 
 mkdir -p "$tmp/missing-bin"
 cat >"$tmp/missing-bin/slirp4netns" <<'EOF'

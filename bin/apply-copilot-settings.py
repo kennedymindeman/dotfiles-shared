@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import re
 import stat
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -13,7 +14,6 @@ SENSITIVE_PATHS = (
     ".aws",
     ".claude",
     ".codex",
-    ".config/alerts",
     ".config/Bitwarden CLI",
     ".config/gh",
     ".copilot/logs",
@@ -25,7 +25,6 @@ SENSITIVE_PATHS = (
     ".npmrc",
     ".pypirc",
     ".ssh",
-    ".tailscale-oauth.env",
     ".bash_history",
     ".zsh_history",
 )
@@ -87,6 +86,7 @@ def build_settings(
     platform,
     sandbox_enabled=True,
     copilot_home=None,
+    sensitive_paths=(),
 ):
     if not isinstance(existing, dict):
         raise ValueError("Copilot settings must be a JSON object")
@@ -172,7 +172,7 @@ def build_settings(
         [
             *[
                 home_path(home, path, platform)
-                for path in (*SENSITIVE_PATHS, *platform_paths)
+                for path in (*SENSITIVE_PATHS, *platform_paths, *sensitive_paths)
             ],
             *[
                 str(copilot_home_path.joinpath(*path.split("/")))
@@ -197,6 +197,30 @@ def load_json(path, label):
             return json.load(stream)
     except json.JSONDecodeError as error:
         raise ValueError(f"{label} is not valid JSON: {error}") from error
+
+
+def load_sensitive(path):
+    """Return an overlay's extra secret variables and home-relative paths."""
+    if not path.exists():
+        return {"env": [], "paths": []}
+    data = load_json(path, str(path))
+    if not isinstance(data, dict) or set(data) - {"env", "paths"}:
+        raise ValueError(f"{path} must be an object with only env and paths")
+    env = data.get("env", [])
+    paths = data.get("paths", [])
+    if not isinstance(env, list) or any(
+        not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+        for name in env
+    ):
+        raise ValueError(f"{path} env must be an array of variable names")
+    if not isinstance(paths, list) or any(
+        not isinstance(item, str)
+        or re.search(r"[\\:\n]", item)
+        or any(part in ("", ".", "..") for part in item.split("/"))
+        for item in paths
+    ):
+        raise ValueError(f"{path} paths must be an array of home-relative paths using /")
+    return {"env": env, "paths": paths}
 
 
 def write_settings(path, settings):
@@ -231,6 +255,7 @@ def apply_settings(
     platform,
     sandbox_enabled=True,
     copilot_home=None,
+    sensitive_path=None,
 ):
     settings = load_json(settings_path, "Copilot settings") if settings_path.exists() else {}
     subagents = load_json(subagents_path, "subagent settings")
@@ -241,6 +266,7 @@ def apply_settings(
         platform,
         sandbox_enabled=sandbox_enabled,
         copilot_home=copilot_home,
+        sensitive_paths=load_sensitive(sensitive_path)["paths"] if sensitive_path else (),
     )
     write_settings(settings_path, updated)
 
@@ -251,6 +277,7 @@ def main(argv=None):
     parser.add_argument("--subagents", required=True, type=Path)
     parser.add_argument("--home", required=True)
     parser.add_argument("--copilot-home")
+    parser.add_argument("--sensitive", type=Path)
     parser.add_argument("--platform", required=True, choices=("unix", "windows"))
     parser.add_argument(
         "--sandbox-enabled",
@@ -266,6 +293,7 @@ def main(argv=None):
             args.platform,
             sandbox_enabled=args.sandbox_enabled == "true",
             copilot_home=args.copilot_home,
+            sensitive_path=args.sensitive,
         )
     except (OSError, ValueError) as error:
         parser.exit(1, f"apply-copilot-settings: {error}\n")
