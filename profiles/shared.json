@@ -4,10 +4,20 @@
     ".config/starship.toml": "starship.toml",
     ".config/helix/config.toml": "helix/config.toml",
     ".config/pudb/pudb.cfg": "pudb/pudb.cfg",
-    ".config/pudb/catppuccin-mocha.py": "pudb/catppuccin-mocha.py"
+    ".config/pudb/catppuccin-mocha.py": "pudb/catppuccin-mocha.py",
+    ".copilot/agents/reviewer.agent.md": "copilot/agents/reviewer.agent.md"
   },
   "unix": {
-    ".config/copilot-shell-defaults.sh": "copilot/shell-defaults.sh"
+    ".config/copilot-shell-defaults.sh": "copilot/shell-defaults.sh",
+    ".claude/agents/reviewer.md": "claude/agents/reviewer.md",
+    ".claude/agents/general-purpose.md": "claude/agents/general-purpose.md",
+    ".claude/output-styles/direct.md": "claude/output-styles/direct.md",
+    ".claude/statusline-command.sh": "claude/statusline-command.sh",
+    ".claude/hooks/diff_coverage.py": "claude/hooks/diff_coverage.py",
+    ".claude/hooks/git-freshness.sh": "claude/hooks/git-freshness.sh",
+    ".claude/hooks/pr-merge-gate.sh": "claude/hooks/pr-merge-gate.sh",
+    ".claude/hooks/skill-ascii.py": "claude/hooks/skill-ascii.py",
+    ".claude/themes/catppuccin-mocha.json": "claude/themes/catppuccin-mocha.json"
   },
   "windows": {},
   "darwin": {

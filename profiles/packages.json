@@ -18,6 +18,7 @@
     {"name": "fzf", "command": "fzf", "brew": "fzf", "dnf": "fzf", "winget": "junegunn.fzf", "source": "https://github.com/junegunn/fzf#installation"},
     {"name": "delta", "command": "delta", "brew": "git-delta", "dnf": "git-delta", "winget": "dandavison.delta", "source": "https://github.com/dandavison/delta#installation"},
     {"name": "jq", "command": "jq", "brew": "jq", "dnf": "jq", "winget": "jqlang.jq", "source": "https://jqlang.org/download/"},
+    {"name": "Ruff", "command": "ruff", "brew": "ruff", "dnf": "ruff", "winget": "astral-sh.ruff", "source": "https://docs.astral.sh/ruff/installation/"},
     {"name": "tmux", "command": "tmux", "platforms": ["brew", "dnf"], "brew": "tmux", "dnf": "tmux", "source": "https://github.com/tmux/tmux/wiki/Installing", "unsupported": "Native Windows is unsupported; use tmux on a separately configured WSL or remote Linux host."},
     {"name": "zsh", "command": "zsh", "platforms": ["brew", "dnf"], "brew": "zsh", "dnf": "zsh", "source": "https://www.zsh.org/"},
     {"name": "bubblewrap", "command": "bwrap", "platforms": ["dnf"], "dnf": "bubblewrap", "source": "https://docs.github.com/en/copilot/concepts/about-cloud-and-local-sandboxes"},
@@ -28,7 +29,6 @@
   ],
   "home": [
     {"name": "Atuin", "command": "atuin", "optional": true, "brew": "atuin", "dnf": "atuin", "winget": "Atuinsh.Atuin", "source": "https://docs.atuin.sh/cli/guide/installation/"},
-    {"name": "Ruff", "command": "ruff", "brew": "ruff", "dnf": "ruff", "winget": "astral-sh.ruff", "source": "https://docs.astral.sh/ruff/installation/"},
     {"name": "zsh autosuggestions", "optional": true, "platforms": ["brew", "dnf"], "brew": "zsh-autosuggestions", "dnf": "zsh-autosuggestions", "source": "https://github.com/zsh-users/zsh-autosuggestions/blob/master/INSTALL.md"},
     {"name": "zsh syntax highlighting", "optional": true, "platforms": ["brew", "dnf"], "brew": "zsh-syntax-highlighting", "dnf": "zsh-syntax-highlighting", "source": "https://github.com/zsh-users/zsh-syntax-highlighting/blob/master/INSTALL.md"}
   ]
