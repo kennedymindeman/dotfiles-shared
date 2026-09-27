@@ -10,7 +10,6 @@
   "unix": {
     ".config/copilot-shell-defaults.sh": "copilot/shell-defaults.sh",
     ".claude/agents/reviewer.md": "claude/agents/reviewer.md",
-    ".claude/agents/general-purpose.md": "claude/agents/general-purpose.md",
     ".claude/output-styles/direct.md": "claude/output-styles/direct.md",
     ".claude/statusline-command.sh": "claude/statusline-command.sh",
     ".claude/hooks/diff_coverage.py": "claude/hooks/diff_coverage.py",

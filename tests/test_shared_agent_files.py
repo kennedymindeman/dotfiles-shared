@@ -3,11 +3,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PERSONAL = re.compile(
-    r"kennedy|telegram|tg-send|\bmini\b|\blaptop\b|tailnet|~/dotfiles\b|/Users/"
-    r"|~/wiki|journal|cloudflare",
-    re.IGNORECASE,
-)
+# Named deny-lists live in the private overlay; this catches generic leaks.
+PERSONAL = re.compile(r"[\w.+-]+@[\w-]+\.[a-z]{2,}|/Users/|/home/", re.IGNORECASE)
 
 
 class SharedAgentFileTests(unittest.TestCase):

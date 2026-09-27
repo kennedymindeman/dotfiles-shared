@@ -22,7 +22,7 @@ HUNK_RE = re.compile(r"^@@ .* \+(\d+)(?:,(\d+))? @@")
 
 
 def run(*args, **kwargs):
-    return subprocess.run(args, capture_output=True, text=True, **kwargs)
+    return subprocess.run(args, capture_output=True, text=True, check=False, **kwargs)
 
 
 def is_measurable(path):
@@ -30,6 +30,8 @@ def is_measurable(path):
     parts = path.split("/")
     name = parts[-1]
     if any(p.startswith(".") for p in parts):
+        return False
+    if "tests" in parts[:-1]:
         return False
     return not (name.startswith("test_") or name == "conftest.py")
 
@@ -70,8 +72,16 @@ def measure(root):
     with tempfile.TemporaryDirectory() as tmp:
         env = {**os.environ, "COVERAGE_FILE": os.path.join(tmp, ".coverage")}
         test = run(
-            python, "-m", "coverage", "run", "--source=.", "-m", "pytest", "-q",
-            cwd=root, env=env,
+            python,
+            "-m",
+            "coverage",
+            "run",
+            "--source=.",
+            "-m",
+            "pytest",
+            "-q",
+            cwd=root,
+            env=env,
         )
         report = run(python, "-m", "coverage", "json", "-o", "-", cwd=root, env=env)
     if report.returncode != 0:
@@ -129,7 +139,9 @@ def main():
     command = (payload.get("tool_input") or {}).get("command", "")
     if "git commit" not in command:
         return
-    root = run("git", "rev-parse", "--show-toplevel").stdout.strip()
+    root = run(
+        "git", "rev-parse", "--show-toplevel", cwd=payload.get("cwd") or None
+    ).stdout.strip()
     if not root:
         return
     msg = report(root)
@@ -151,5 +163,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - a hook must never block
         pass

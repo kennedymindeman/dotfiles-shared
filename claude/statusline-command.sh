@@ -4,6 +4,7 @@
 # Shows: short model name (+1M tag for large-context variants), context
 # window remaining %, and Claude.ai rate-limit usage when present. Any
 # missing field is dropped silently rather than printing "null" or erroring.
+command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat)
 
 model=$(echo "$input" | jq -r '.model.display_name // empty')
