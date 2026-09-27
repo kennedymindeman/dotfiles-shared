@@ -288,7 +288,7 @@ class InstallerTests(unittest.TestCase):
         status, output = self.invoke("--profile", "work", "--dry-run")
         self.assertEqual(status, 0)
         self.assertNotIn("atuin", output.lower())
-        self.assertNotIn("ruff", output.lower())
+        self.assertIn("present: ruff", output.lower())
 
     def test_missing_brew_is_not_bootstrapped(self):
         self.manager = "brew"
