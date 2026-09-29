@@ -1,0 +1,14 @@
+{
+  "builder": {
+    "model": "claude-opus-5.5",
+    "effortLevel": "medium"
+  },
+  "researcher": {
+    "model": "claude-opus-5.5",
+    "effortLevel": "high"
+  },
+  "reviewer": {
+    "model": "claude-opus-5.5",
+    "effortLevel": "high"
+  }
+}

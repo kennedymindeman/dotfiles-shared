@@ -4,6 +4,8 @@ Copy this directory into a new **private** repository. It has no
 private dependency, credentials, or real identity. Replace the synthetic identity
 in `gitconfig.work` before linking, or delete that file and configure identity
 locally. Replace or remove `agents/work.md` to match the environment's rules.
+`copilot/subagents.json` pins the Copilot agents to one model version; change it
+to a model your plan offers, or delete it.
 
 Keep `profiles/work.json`: its name declares that this is a work overlay. An empty
 `files` map is sufficient for the optional Git and agent files. Add mappings only

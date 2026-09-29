@@ -115,6 +115,23 @@ the effective policy on that machine.
 Copilot uses manual approvals, disables its built-in MCP servers in the launcher,
 and restricts sensitive paths. Outbound internet remains allowed.
 
+## Install agent skills
+
+The shared agents are small single-job agents. The `builder` and `researcher`
+agents preload skills from [kennedymindeman/skills](https://github.com/kennedymindeman/skills).
+Install those skills for each agent harness you use:
+
+```sh
+npx skills add kennedymindeman/skills -g -a claude-code -s fixed-brief-executor evidence-researcher research -y
+npx skills add kennedymindeman/skills -g -a github-copilot -s fixed-brief-executor evidence-researcher research -y
+```
+
+Claude agents use `model: opus`, which follows the newest Opus your provider
+recommends. Copilot agent files have no alias for the newest model, so they
+inherit the session model. To pin one, set the version in the overlay's
+`copilot/subagents.json`, as in [the work example](examples/work-overlay/copilot/subagents.json),
+and update it when a new Opus ships.
+
 ## Update or change profiles
 
 The profile resolves from `--profile`, then `DOTFILES_ENV`, then `~/.dotfiles-env`.

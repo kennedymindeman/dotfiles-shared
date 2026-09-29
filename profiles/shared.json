@@ -5,7 +5,9 @@
     ".config/helix/config.toml": "helix/config.toml",
     ".config/pudb/pudb.cfg": "pudb/pudb.cfg",
     ".config/pudb/catppuccin-mocha.py": "pudb/catppuccin-mocha.py",
-    ".copilot/agents/reviewer.agent.md": "copilot/agents/reviewer.agent.md"
+    ".copilot/agents/reviewer.agent.md": "copilot/agents/reviewer.agent.md",
+    ".copilot/agents/builder.agent.md": "copilot/agents/builder.agent.md",
+    ".copilot/agents/researcher.agent.md": "copilot/agents/researcher.agent.md"
   },
   "unix": {
     ".config/copilot-shell-defaults.sh": "copilot/shell-defaults.sh",
@@ -16,7 +18,13 @@
     ".claude/hooks/git-freshness.sh": "claude/hooks/git-freshness.sh",
     ".claude/hooks/pr-merge-gate.sh": "claude/hooks/pr-merge-gate.sh",
     ".claude/hooks/skill-ascii.py": "claude/hooks/skill-ascii.py",
-    ".claude/themes/catppuccin-mocha.json": "claude/themes/catppuccin-mocha.json"
+    ".claude/themes/catppuccin-mocha.json": "claude/themes/catppuccin-mocha.json",
+    ".claude/agents/builder.md": "claude/agents/builder.md",
+    ".claude/agents/calendar.md": "claude/agents/calendar.md",
+    ".claude/agents/drive.md": "claude/agents/drive.md",
+    ".claude/agents/general-purpose.md": "claude/agents/general-purpose.md",
+    ".claude/agents/gmail.md": "claude/agents/gmail.md",
+    ".claude/agents/researcher.md": "claude/agents/researcher.md"
   },
   "windows": {},
   "darwin": {
