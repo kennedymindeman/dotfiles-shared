@@ -21,7 +21,6 @@
     ".claude/themes/catppuccin-mocha.json": "claude/themes/catppuccin-mocha.json",
     ".claude/agents/builder.md": "claude/agents/builder.md",
     ".claude/agents/calendar.md": "claude/agents/calendar.md",
-    ".claude/agents/cloudflare.md": "claude/agents/cloudflare.md",
     ".claude/agents/drive.md": "claude/agents/drive.md",
     ".claude/agents/general-purpose.md": "claude/agents/general-purpose.md",
     ".claude/agents/gmail.md": "claude/agents/gmail.md",
