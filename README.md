@@ -118,12 +118,15 @@ and restricts sensitive paths. Outbound internet remains allowed.
 ## Install agent skills
 
 The shared agents are small single-job agents. The `builder` and `researcher`
-agents preload skills from [kennedymindeman/skills](https://github.com/kennedymindeman/skills).
+agents preload skills from [kennedymindeman/skills](https://github.com/kennedymindeman/skills),
+and `researcher` also preloads `research` from [mattpocock/skills](https://github.com/mattpocock/skills).
 Install those skills for each agent harness you use:
 
 ```sh
-npx skills add kennedymindeman/skills -g -a claude-code -s fixed-brief-executor evidence-researcher research -y
-npx skills add kennedymindeman/skills -g -a github-copilot -s fixed-brief-executor evidence-researcher research -y
+npx skills add kennedymindeman/skills -g -a claude-code -s fixed-brief-executor evidence-researcher -y
+npx skills add mattpocock/skills -g -a claude-code -s research -y
+npx skills add kennedymindeman/skills -g -a github-copilot -s fixed-brief-executor evidence-researcher -y
+npx skills add mattpocock/skills -g -a github-copilot -s research -y
 ```
 
 Claude agents use `model: opus`, which follows the newest Opus your provider
