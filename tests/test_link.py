@@ -349,9 +349,27 @@ class LinkTests(unittest.TestCase):
         with contextlib.redirect_stderr(output):
             self.apply("home", self.overlay)
         self.assertIn("warning", output.getvalue())
+        self.assertIn(str(self.home / "AGENTS.md"), output.getvalue())
         self.assertIn("# focus", output.getvalue())
         self.assertNotIn("# extra", output.getvalue())
         self.assertTrue((self.home / "AGENTS.md").read_text().startswith(stale))
+
+    def test_distinct_rules_outside_block_do_not_warn(self):
+        self.write(self.repo / "agents/core.md", "# focus\nUse focused changes.\n")
+        self.write(self.home / "AGENTS.md", "# extra\nKeep me.\n")
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.apply("home", self.overlay)
+        self.assertEqual("", output.getvalue())
+
+    def test_fenced_comments_are_not_headings(self):
+        fence = "```sh\n# install\nmake\n```\n"
+        self.write(self.repo / "agents/core.md", "# focus\n" + fence)
+        self.write(self.home / "AGENTS.md", "~~~\n# focus\n~~~\n" + fence)
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.apply("home", self.overlay)
+        self.assertEqual("", output.getvalue())
 
     def test_legacy_git_include_is_adopted_and_removed_on_work(self):
         self.write(
