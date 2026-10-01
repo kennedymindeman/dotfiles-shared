@@ -341,6 +341,18 @@ class LinkTests(unittest.TestCase):
             self.apply("work")
         self.assertEqual(before, self.snapshot())
 
+    def test_rules_repeated_outside_block_warn_and_are_kept(self):
+        self.write(self.repo / "agents/core.md", "# focus\nUse focused changes.\n")
+        stale = "# focus\nOld wording.\n\n# extra\nKeep me.\n"
+        self.write(self.home / "AGENTS.md", stale)
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.apply("home", self.overlay)
+        self.assertIn("warning", output.getvalue())
+        self.assertIn("# focus", output.getvalue())
+        self.assertNotIn("# extra", output.getvalue())
+        self.assertTrue((self.home / "AGENTS.md").read_text().startswith(stale))
+
     def test_legacy_git_include_is_adopted_and_removed_on_work(self):
         self.write(
             self.home / ".gitconfig",

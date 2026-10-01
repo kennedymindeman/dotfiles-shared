@@ -275,6 +275,17 @@ class Installer:
                 f"preserving existing WezTerm configuration: {path}; review it before linking"
             )
         outside_rules = pattern.sub("", original).strip()
+        heading = re.compile(r"^#+ .+$", re.MULTILINE)
+        repeated = sorted(
+            set(heading.findall(content)) & set(heading.findall(outside_rules))
+        )
+        if markdown and repeated:
+            # Warn only: the text outside the block belongs to the user.
+            print(
+                f"warning: {path} repeats managed rules outside the dotfiles block "
+                f"({', '.join(repeated)}); remove the stale copy after review",
+                file=sys.stderr,
+            )
         if self.profile == "work" and markdown and outside_rules:
             raise ValueError(
                 f"review existing global agent instructions before using work: {path}"
