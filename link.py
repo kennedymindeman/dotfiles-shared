@@ -21,6 +21,17 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def headings(text):
+    # Skip fenced code so shell comments are not taken for headings.
+    found, fenced = set(), False
+    for line in text.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and re.match(r"#+ .+$", line):
+            found.add(line)
+    return found
+
+
 def read_json(path, default=None):
     if not path.exists():
         return default
@@ -275,6 +286,14 @@ class Installer:
                 f"preserving existing WezTerm configuration: {path}; review it before linking"
             )
         outside_rules = pattern.sub("", original).strip()
+        repeated = sorted(headings(content) & headings(outside_rules))
+        if markdown and repeated:
+            # Warn only: the text outside the block belongs to the user.
+            print(
+                f"warning: {path} repeats managed rules outside the dotfiles block "
+                f"({', '.join(repeated)}); remove the stale copy after review",
+                file=sys.stderr,
+            )
         if self.profile == "work" and markdown and outside_rules:
             raise ValueError(
                 f"review existing global agent instructions before using work: {path}"
