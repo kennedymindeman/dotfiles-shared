@@ -123,9 +123,9 @@ and `researcher` also preloads `research` from [mattpocock/skills](https://githu
 Install those skills for each agent harness you use:
 
 ```sh
-npx skills add kennedymindeman/skills -g -a claude-code -s fixed-brief-executor evidence-researcher -y
+npx skills add kennedymindeman/skills -g -a claude-code -s builder-rules researcher-rules -y
 npx skills add mattpocock/skills -g -a claude-code -s research -y
-npx skills add kennedymindeman/skills -g -a github-copilot -s fixed-brief-executor evidence-researcher -y
+npx skills add kennedymindeman/skills -g -a github-copilot -s builder-rules researcher-rules -y
 npx skills add mattpocock/skills -g -a github-copilot -s research -y
 ```
 
