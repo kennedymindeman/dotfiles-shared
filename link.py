@@ -23,12 +23,14 @@ def digest(data):
 
 def headings(text):
     # Skip fenced code so shell comments are not taken for headings.
-    found, fenced = set(), False
+    found, fenced = {}, False
     for line in text.splitlines():
         if line.lstrip().startswith(("```", "~~~")):
             fenced = not fenced
         elif not fenced and re.match(r"#+ .+$", line):
-            found.add(line)
+            # Key "# prAuthoring" and "# PR authoring" alike so old copies match.
+            key = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", line).lower().split()
+            found.setdefault(" ".join(key), line)
     return found
 
 
@@ -286,7 +288,8 @@ class Installer:
                 f"preserving existing WezTerm configuration: {path}; review it before linking"
             )
         outside_rules = pattern.sub("", original).strip()
-        repeated = sorted(headings(content) & headings(outside_rules))
+        managed, outside = headings(content), headings(outside_rules)
+        repeated = sorted(managed[key] for key in managed.keys() & outside.keys())
         if markdown and repeated:
             # Warn only: the text outside the block belongs to the user.
             print(
