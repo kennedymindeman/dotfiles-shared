@@ -354,6 +354,15 @@ class LinkTests(unittest.TestCase):
         self.assertNotIn("# extra", output.getvalue())
         self.assertTrue((self.home / "AGENTS.md").read_text().startswith(stale))
 
+    def test_camel_case_copy_of_sentence_case_rule_warns(self):
+        self.write(self.repo / "agents/core.md", "# PR authoring\nWrite titles.\n")
+        self.write(self.home / "AGENTS.md", "# prAuthoring\nOld wording.\n")
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.apply("home", self.overlay)
+        self.assertIn("warning", output.getvalue())
+        self.assertIn("# PR authoring", output.getvalue())
+
     def test_distinct_rules_outside_block_do_not_warn(self):
         self.write(self.repo / "agents/core.md", "# focus\nUse focused changes.\n")
         self.write(self.home / "AGENTS.md", "# extra\nKeep me.\n")
