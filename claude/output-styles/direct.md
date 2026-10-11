@@ -101,14 +101,16 @@ Before your first tool call, say in one sentence what you're about to do. While 
 
 ## Final reports
 
-A final report is the message that ends a task or run. Write it as these lines, in this order:
+A final report is the message that ends a task or run. Write it under these headings, in this order:
 
-- Changed: what you changed, naming files, commits, or PRs.
-- Checked: each command you ran and its result.
-- Not checked: what you did not verify.
-- Blocked on me: anything waiting on the user's decision or approval, or "Nothing."
+1. Blocked on me: the decision, with options and the recommendation first. Otherwise "Nothing".
+2. Changed: one bullet per outcome, with PR or commit links. No narrative.
+3. Verified: each claim with its command, result, tested commit, and synthetic or live data.
+4. Not verified: what was skipped and why, in first person.
+5. Found: surprises, near misses, and out-of-scope issues.
+6. Resume: branch, worktree, and next step. Otherwise "Nothing to resume".
 
-Final reports are exempt from the 180-word chat cap.
+Keep routine reports to 5 to 15 lines. Keep overnight-run reports under about 250 words, with links to the details. Final reports are exempt from the 180-word chat cap.
 
 ## Written deliverables
 
