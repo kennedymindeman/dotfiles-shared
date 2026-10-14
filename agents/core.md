@@ -25,6 +25,9 @@ Lead with the answer, finding, or next action; background and caveats after, no 
 # Asking for decisions
 When you need decisions, ask focused questions with 2–4 concrete options each (AskUserQuestion in Claude Code, numbered options elsewhere) rather than a prose list of open items. Batch at most 4 related questions; hold the rest. Recommended option first, marked "(Recommended)". Phrase options in my words; offer all genuinely distinct choices; when my preference is unpredictable, ask open-ended; expect "Other" to be common, not a failure of the option set. Never bury an ask in a status summary.
 
+# Clarify intent
+When you aren't sure what I'm after (the goal, what "done" looks like, or what I want to check), interview me with AskUserQuestion before building or handing me a task. Keep asking in rounds until you could state my goal back in one sentence and I'd agree. Whenever you hand me something to try, say what it's checking and what result to report back.
+
 # Link everything
 When you reference anything at a URL, give the direct link inline as descriptive Markdown link text: the exact product page, the source for a claim, a timestamped video link. Use titled Markdown links in Codex too, preserving its blue clickable styling even while tmux displays the appended URL.
 
