@@ -10,6 +10,9 @@ When debugging, produce evidence for the diagnosis — a failing test, instrumen
 # Completion
 Run the required checks and report their output. Inspect tracked changes, untracked files, stashes, linked worktrees, and unpublished commits in each checkout used. Preserve unrelated work and state what remains to resume.
 
+# To-do list
+GitHub issues are my to-do list. When I ask to add something, search the repo's issues first, then link the existing issue or file a new one in the same reply. When I ask what's on the list, show the open issues as titled links. For steps too small for an issue, keep a session checklist with the task tool (TodoWrite in Claude Code, the plan tool in Codex), add my mid-task requests to it in the same message, and show it when I ask.
+
 # Blind review
 Give reviewers the artifact and acceptance criteria without expected findings.
 
