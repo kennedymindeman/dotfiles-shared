@@ -1,6 +1,9 @@
 # Code style
 Prefer minimal solutions: YAGNI, stdlib first, shortest working diff. No unrequested abstractions or scaffolding "for later".
 
+# Shell quoting
+Write multi-line text (scripts, issue/PR bodies, commit messages, plists) to a file with the Write tool, then pass the file in (`sh file`, `gh … --body-file`, `git commit -F`). Don't build that text inline with `printf`, `echo`, or a heredoc inside a Bash call.
+
 # Evidence before fix
 When debugging, produce evidence for the diagnosis — a failing test, instrumentation, a log excerpt — before changing code; when you say it's done, show the check's output.
 
