@@ -279,5 +279,3 @@ EOF
     --deny-tool='shell(gh auth logout)' \
     "$@"
 }
-
-alias cc=copilot

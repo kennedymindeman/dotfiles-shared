@@ -131,6 +131,8 @@ if command -v nvim >/dev/null; then
   alias vim='nvim'
   alias vi='nvim'
 fi
+# Shadows /usr/bin/cc only when typed; scripts and make still get the compiler.
+command -v claude >/dev/null && alias cc='claude'
 
 [ -f "$HOME/.config/copilot-shell-defaults.sh" ] && . "$HOME/.config/copilot-shell-defaults.sh"
 
