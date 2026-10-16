@@ -214,8 +214,8 @@ class WorktreeCleanupTests(unittest.TestCase):
         self.assertFalse(self.wt.exists())
 
     def test_backslash_continuation_removes_worktree(self):
-        # jq -r on Windows writes CRLF line endings.
-        for newline in ["\n", "\r\n"]:
+        # jq -r on Windows writes text mode, so \n arrives as \r\n and \r\n as \r\r\n.
+        for newline in ["\n", "\r\n", "\r\r\n"]:
             with self.subTest(newline=repr(newline)):
                 if not self.wt.exists():
                     self.git(
