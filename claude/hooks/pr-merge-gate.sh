@@ -10,14 +10,19 @@ input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
 case "$cmd" in *"gh pr merge"*) ;; *) exit 0 ;; esac
 
-# Parse the merge command: PR number/url (first bare arg) and -R/--repo.
-set -- $(printf '%s' "$cmd" | sed -n 's/.*gh pr merge//p')
-pr=""; repo=""; delete=""
+# Parse the merge command up to the next shell separator: PR number/url
+# (first bare arg), -R/--repo, -d/--delete-branch, and --auto.
+set -- $(printf '%s\n' "$cmd" | sed -n 's/.*gh pr merge//p' | head -n 1 \
+  | sed 's/[;&|].*//')
+pr=""; repo=""; delete=""; auto=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -R|--repo) repo=${2:-}; [ $# -gt 1 ] && shift ;;
     --repo=*) repo=${1#--repo=} ;;
+    -b|--body|-t|--subject|-A|--author-email|-F|--body-file|--match-head-commit)
+      [ $# -gt 1 ] && shift ;;
     -d|--delete-branch) delete=1 ;;
+    --auto) auto=1 ;;
     -*) ;;
     *) [ -z "$pr" ] && pr=$1 ;;
   esac
@@ -54,8 +59,8 @@ MSG
 exit 2
 fi
 
-# gh only deletes the local branch when -R is absent.
-[ -n "$delete" ] && [ -z "$repo" ] || exit 0
+# gh only deletes the local branch when -R is absent and the merge isn't queued.
+[ -n "$delete" ] && [ -z "$repo" ] && [ -z "$auto" ] || exit 0
 # The first worktree listed is the main checkout; only linked ones are removed.
 wts=$(git worktree list --porcelain 2>/dev/null) || exit 0
 main=$(printf '%s\n' "$wts" | sed -n '1s/^worktree //p')
@@ -63,15 +68,17 @@ wt=$(printf '%s\n' "$wts" | awk -v ref="refs/heads/$head" '
   /^worktree / { path = substr($0, 10); n++ }
   $0 == "branch " ref && n > 1 { print path }')
 [ -n "$wt" ] || exit 0
+# A worktree whose directory is gone is prunable; pruning frees the branch.
+[ -d "$wt" ] || { git worktree prune; exit 0; }
 
 why=""
 case "$(pwd -P)/" in "$(cd "$wt" 2>/dev/null && pwd -P || echo "$wt")"/*)
   why="$why
   this command runs inside it; rerun gh pr merge from $main" ;;
 esac
-dirty=$(git -C "$wt" status --porcelain 2>&1)
+dirty=$(git -C "$wt" status --porcelain --untracked-files=all --ignored 2>&1)
 [ -n "$dirty" ] && why="$why
-  uncommitted changes or untracked files:
+  uncommitted changes, untracked or ignored files:
 $(printf '%s\n' "$dirty" | sed 's/^/    /')"
 unpushed=$(git -C "$wt" log --oneline HEAD --not --remotes 2>&1)
 [ -n "$unpushed" ] && why="$why
