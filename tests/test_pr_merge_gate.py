@@ -165,7 +165,9 @@ class WorktreeCleanupTests(unittest.TestCase):
             with self.subTest(command=command):
                 result = self.hook(command)
                 self.assertEqual(result.returncode, 2)
-                self.assertIn(f"git worktree remove '{self.wt.as_posix()}'", result.stderr)
+                self.assertIn(
+                    f"git worktree remove '{self.wt.as_posix()}'", result.stderr
+                )
                 self.assertTrue(self.wt.exists())
 
     def test_python_failure_still_blocks_delete(self):
@@ -198,7 +200,9 @@ class WorktreeCleanupTests(unittest.TestCase):
                 result = self.hook(command)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("unresolved review threads", result.stderr)
-                self.assertTrue(self.gh_log.read_text().startswith(view), self.gh_log.read_text())
+                self.assertTrue(
+                    self.gh_log.read_text().startswith(view), self.gh_log.read_text()
+                )
 
     def test_explicit_pr_number_reaches_gh(self):
         self.hook("gh pr merge 7 --squash -d")
@@ -210,9 +214,18 @@ class WorktreeCleanupTests(unittest.TestCase):
         self.assertFalse(self.wt.exists())
 
     def test_backslash_continuation_removes_worktree(self):
-        result = self.hook("gh pr merge 1 --squash \\\n  --delete-branch")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.wt.exists())
+        # jq -r on Windows writes CRLF line endings.
+        for newline in ["\n", "\r\n"]:
+            with self.subTest(newline=repr(newline)):
+                if not self.wt.exists():
+                    self.git(
+                        self.main, "worktree", "add", "-q", str(self.wt), "feature"
+                    )
+                result = self.hook(
+                    f"gh pr merge 1 --squash \\{newline}  --delete-branch"
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(self.wt.exists())
 
     def test_unbalanced_quote_still_blocks_on_unresolved_thread(self):
         self.env["FAKE_THREAD"] = "T1\tf.py:1\tbot\thttps://example.invalid/c1\n    fix"

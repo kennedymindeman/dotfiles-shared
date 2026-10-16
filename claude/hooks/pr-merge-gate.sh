@@ -21,7 +21,7 @@ pr=""; repo=""; delete=""; auto=""; safe=""
 if out=$(python3 -c '
 import re, shlex, sys
 p = ";&|()<>\n"
-c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", sys.argv[1].replace("\\\n", ""))
+c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", sys.argv[1].replace("\r\n", "\n").replace("\\\n", ""))
 l = shlex.shlex(c, posix=True, punctuation_chars=p)
 l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
 t = list(l)
