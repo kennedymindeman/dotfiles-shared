@@ -11,7 +11,7 @@ from pathlib import Path
 HOOK = Path(__file__).resolve().parents[1] / "claude/hooks/pr-merge-gate.sh"
 FAKE_GH = """#!/bin/sh
 case "$*" in
-  "pr view"*) echo "https://github.com/o/r/pull/1 feature" ;;
+  "pr view"*) echo "$*" >> "$GH_LOG"; echo "https://github.com/o/r/pull/1 feature" ;;
   "api graphql"*) [ -n "${FAKE_THREAD:-}" ] && echo "$FAKE_THREAD" ;;
 esac
 exit 0
@@ -31,7 +31,13 @@ class WorktreeCleanupTests(unittest.TestCase):
         bin_dir.mkdir()
         (bin_dir / "gh").write_text(FAKE_GH)
         (bin_dir / "gh").chmod(0o755)
-        self.env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+        self.bin_dir = bin_dir
+        self.gh_log = root / "gh.log"
+        self.env = {
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "GH_LOG": str(self.gh_log),
+        }
         self.main = root / "main"
         self.wt = root / "wt feature"
         self.git(root, "init", "-q", "--bare", "remote.git")
@@ -123,28 +129,80 @@ class WorktreeCleanupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.wt.exists())
 
-    def test_auto_merge_leaves_worktree(self):
-        result = self.hook("gh pr merge 1 --squash --auto -d")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.wt.exists())
-
-    def test_commands_that_must_not_remove_the_worktree(self):
+    def test_commands_without_delete_leave_the_worktree(self):
         for command in [
             'gh pr merge 1 --squash --body "do not use -d here"',
             "gh pr merge 1 -s -b 'see -d flag'",
             'gh pr merge 1 --squash --body="x -d y"',
             "gh pr merge 1 -s # later -d",
             "gh pr merge 1 -s\ngit branch -d old",
-            "gh pr merge 1 --disable-auto -d",
-            "gh pr merge 1 --auto=true -d",
-            f"cd {self.main} && gh pr merge 1 -s -d",
-            "GH_REPO=o/r gh pr merge 1 -s -d",
-            "gh pr merge 1 -s -d --body 'unbalanced",
         ]:
             with self.subTest(command=command):
                 result = self.hook(command)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(self.wt.exists())
+
+    def test_ambiguous_delete_blocks_with_remove_command(self):
+        for command in [
+            "gh pr merge 1 --squash --auto -d",
+            "gh pr merge 1 --disable-auto -d",
+            "gh pr merge 1 --auto=true -d",
+            "gh pr merge 1 -R o/r --squash --delete-branch",
+            f"cd {self.main} && gh pr merge 1 -s -d",
+            f"pushd {self.main} >/dev/null; gh pr merge 1 -s -d; popd",
+            "GH_REPO=o/r gh pr merge 1 -s -d",
+            "GIT_DIR=x gh pr merge 1 -s -d",
+            "gh pr merge 1 -s -d --body 'unbalanced",
+            "gh pr merge 1 -s -d=false",
+            "gh pr merge 1 -s --delete-branch=true",
+            "gh pr merge --squash -d",
+            "gh pr merge --squash -d 2>&1",
+            "gh pr merge 2 -s -d 2>/dev/null",
+            "gh pr merge 1 -s -d || true",
+            "(gh pr merge 1 -s -d)",
+            "gh pr merge 1 -s -d | cat",
+        ]:
+            with self.subTest(command=command):
+                result = self.hook(command)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(f"git worktree remove '{self.wt.as_posix()}'", result.stderr)
+                self.assertTrue(self.wt.exists())
+
+    def test_python_failure_still_blocks_delete(self):
+        (self.bin_dir / "python3").write_text("#!/bin/sh\nexit 1\n")
+        (self.bin_dir / "python3").chmod(0o755)
+        result = self.hook("gh pr merge 1 -s -d")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("git worktree remove", result.stderr)
+        self.assertTrue(self.wt.exists())
+
+    def test_unresolved_thread_check_keeps_the_pr_number(self):
+        self.env["FAKE_THREAD"] = "T1\tf.py:1\tbot\thttps://example.invalid/c1\n    fix"
+        stub = self.bin_dir / "python3"
+        for name, command, view in [
+            ("comment", "gh pr merge 5 --squash  # don't delete yet", "pr view 5 "),
+            (
+                "heredoc",
+                "gh pr merge 5 --squash --body-file - <<'EOF'\nit's done\nEOF",
+                "pr view 5 ",
+            ),
+            ("ansi-c", "gh pr merge 5 --squash --subject $'it\\'s done'", "pr view 5 "),
+            ("redirect", "gh pr merge --squash 2>&1", "pr view --json"),
+            ("python-fails", "gh pr merge 5 --squash", "pr view 5 "),
+        ]:
+            with self.subTest(name=name):
+                if name == "python-fails":
+                    stub.write_text("#!/bin/sh\nexit 1\n")
+                    stub.chmod(0o755)
+                self.gh_log.write_text("")
+                result = self.hook(command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("unresolved review threads", result.stderr)
+                self.assertTrue(self.gh_log.read_text().startswith(view), self.gh_log.read_text())
+
+    def test_explicit_pr_number_reaches_gh(self):
+        self.hook("gh pr merge 7 --squash -d")
+        self.assertTrue(self.gh_log.read_text().startswith("pr view 7 "))
 
     def test_combined_short_flags_remove_worktree(self):
         result = self.hook("gh pr merge 1 -sd")
@@ -163,12 +221,17 @@ class WorktreeCleanupTests(unittest.TestCase):
         self.assertIn("T1", result.stderr)
         self.assertTrue(self.wt.exists())
 
-    def test_prunable_worktree_is_pruned_and_merge_allowed(self):
+    def test_missing_worktree_dir_blocks_without_pruning(self):
+        other = self.wt.parent / "wt other"
+        self.git(self.main, "worktree", "add", "-q", "-b", "other", str(other))
+        shutil.rmtree(other)
         shutil.rmtree(self.wt)
         result = self.hook()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("prunable", self.git(self.main, "worktree", "list", "--porcelain"))
-        self.assertNotIn(self.wt.as_posix(), self.git(self.main, "worktree", "list"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("git worktree prune", result.stderr)
+        listed = self.git(self.main, "worktree", "list", "--porcelain")
+        self.assertIn(other.as_posix(), listed)
+        self.assertIn(self.wt.as_posix(), listed)
 
     def test_unresolved_thread_blocks_and_leaves_worktree(self):
         self.env["FAKE_THREAD"] = "T1\tf.py:1\tbot\thttps://example.invalid/c1\n    fix"
@@ -194,11 +257,6 @@ class WorktreeCleanupTests(unittest.TestCase):
 
     def test_without_delete_branch_worktree_stays(self):
         result = self.hook("gh pr merge 1 --squash")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.wt.exists())
-
-    def test_repo_flag_leaves_local_worktrees_alone(self):
-        result = self.hook("gh pr merge 1 -R o/r --squash --delete-branch")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.wt.exists())
 

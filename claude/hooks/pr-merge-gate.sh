@@ -4,7 +4,7 @@
 # resolve before the merge lands. With --delete-branch it also removes a clean
 # linked worktree holding the head branch, since gh can't delete a branch that
 # is checked out (dotfiles#125). Exit 2 = block; anything else = allow.
-set -uf  # -f: $repoflag is word-split below and must not glob
+set -uf  # -f: $repoflag and $cmd are word-split below and must not glob
 command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
@@ -12,18 +12,21 @@ case "$cmd" in *"gh pr merge"*) ;; *) exit 0 ;; esac
 
 # Tokenize with shell rules and parse the merge command up to the next
 # separator, redirection, newline, or comment: PR number/url (first bare arg),
-# -R/--repo, -d/--delete-branch, and --auto/--disable-auto. A `cd` or GH_REPO=
-# before gh breaks the cwd/repo assumptions, so delete stays empty; so it does
-# when python3 is missing or the quoting is unbalanced.
-pr=""; repo=""; delete=""; auto=""
-eval "$(python3 -c '
-import shlex, sys
+# -R/--repo, -d/--delete-branch, and --auto/--disable-auto. delete is 1 for an
+# exact -d/--delete-branch and ? for a valued form like -d=false. safe=1 only
+# for a lone `gh pr merge <number> ...` with exact delete and nothing that moves
+# the cwd, repo, or timing; only then may the hook remove a worktree. A fd
+# number before a redirect (2>&1) is dropped so it isn't read as the PR.
+pr=""; repo=""; delete=""; auto=""; safe=""
+if out=$(python3 -c '
+import re, shlex, sys
 p = ";&|()<>\n"
-l = shlex.shlex(sys.argv[1].replace("\\\n", ""), posix=True, punctuation_chars=p)
+c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", sys.argv[1].replace("\\\n", ""))
+l = shlex.shlex(c, posix=True, punctuation_chars=p)
 l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
 t = list(l)
 i = next(i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"])
-v = dict(pr="", repo="", delete="", auto="")
+v = dict(pr="", repo="", delete="", auto="", safe="")
 args = iter(t[i + 3:])
 for a in args:
     if set(a) <= set(p) or a.startswith("#"):
@@ -34,27 +37,47 @@ for a in args:
         v["repo"] = a[7:]
     elif a in ("--body", "--subject", "--author-email", "--body-file", "--match-head-commit"):
         next(args, "")
-    elif a in ("--delete-branch", "--delete-branch=true"):
-        v["delete"] = "1"
+    elif a.startswith("--delete-branch"):
+        v["delete"] = "?" if "=" in a or v["delete"] == "?" else "1"
     elif a.split("=")[0] in ("--auto", "--disable-auto"):
         v["auto"] = "1"
     elif a.startswith("-") and not a.startswith("--"):
-        for j, c in enumerate(a[1:], 2):
-            if c in "RbtAF":
+        for j, ch in enumerate(a[1:], 2):
+            if ch in "RbtAF":
                 val = a[j:] or next(args, "")
-                if c == "R":
+                if ch == "R":
                     v["repo"] = val
                 break
-            if c == "d":
-                v["delete"] = "1"
+            if ch == "d":
+                v["delete"] = "?" if "=" in a or v["delete"] == "?" else "1"
     elif not a.startswith("-") and not v["pr"]:
         v["pr"] = a
-if "cd" in t[:i] or any(x.startswith("GH_REPO=") for x in t[:i]):
-    v["delete"] = ""
+if (i == 0 and v["delete"] == "1" and v["pr"].isdigit() and not v["repo"]
+        and not v["auto"] and not re.search("[$`]", c)
+        and not any(set(x) <= set(p) for x in t)):
+    v["safe"] = "1"
 print(" ".join(k + "=" + shlex.quote(x) for k, x in v.items()))
-' "$cmd" 2>/dev/null)"
+' "$cmd" 2>/dev/null); then
+  eval "$out"
+else
+  # Unparseable or no python3: the old word-split extraction for the PR and
+  # repo, and treat any delete-looking word anywhere as a possible delete.
+  set -- $(printf '%s' "$cmd" | sed -n 's/.*gh pr merge//p')
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -R|--repo) repo=${2:-}; [ $# -gt 1 ] && shift ;;
+      --repo=*) repo=${1#--repo=} ;;
+      -*) ;;
+      *) [ -z "$pr" ] && pr=$1 ;;
+    esac
+    shift
+  done
+  for w in $cmd; do
+    case "$w" in --delete-branch*) delete="?" ;; --*) ;; -*d*) delete="?" ;; esac
+  done
+fi
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
-[ -n "$cwd" ] && cd "$cwd" 2>/dev/null
+[ -n "$cwd" ] && { cd "$cwd" 2>/dev/null || safe=""; }
 repoflag=""; [ -n "$repo" ] && repoflag="-R $repo"
 # The PR url names the base repo even when the head is a fork.
 info=$(gh pr view ${pr:+"$pr"} $repoflag --json url,headRefName \
@@ -84,8 +107,7 @@ MSG
 exit 2
 fi
 
-# gh only deletes the local branch when -R is absent and the merge isn't queued.
-[ -n "$delete" ] && [ -z "$repo" ] && [ -z "$auto" ] || exit 0
+[ -n "$delete" ] || exit 0
 # The first worktree listed is the main checkout; only linked ones are removed.
 wts=$(git worktree list --porcelain 2>/dev/null) || exit 0
 main=$(printf '%s\n' "$wts" | sed -n '1s/^worktree //p')
@@ -93,8 +115,24 @@ wt=$(printf '%s\n' "$wts" | awk -v ref="refs/heads/$head" '
   /^worktree / { path = substr($0, 10); n++ }
   $0 == "branch " ref && n > 1 { print path }')
 [ -n "$wt" ] || exit 0
-# A worktree whose directory is gone is prunable; pruning frees the branch.
-[ -d "$wt" ] || { git worktree prune; exit 0; }
+# Prune is repo-wide, so it stays the user's call.
+if [ ! -d "$wt" ]; then
+cat >&2 <<MSG
+BLOCKED: $head is registered to the worktree $wt, whose directory is gone, so
+--delete-branch can't delete it. Check \`git worktree list\`, then run
+\`git worktree prune\` (it prunes every stale worktree in this repo) and retry.
+MSG
+exit 2
+fi
+if [ -z "$safe" ]; then
+cat >&2 <<MSG
+BLOCKED: this merge may delete $head, which is checked out in the worktree
+$wt. The hook only removes it for a lone \`gh pr merge <number> ... -d\`
+command. If that worktree is clean and pushed, remove it first, then retry:
+  git worktree remove '$wt'
+MSG
+exit 2
+fi
 
 why=""
 case "$(pwd -P)/" in "$(cd "$wt" 2>/dev/null && pwd -P || echo "$wt")"/*)
