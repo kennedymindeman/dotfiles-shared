@@ -1,7 +1,9 @@
 #!/bin/sh
 # PreToolUse hook (matcher: Bash). Blocks `gh pr merge` while the PR has
 # unresolved review threads, so Copilot/human comments get a reply and a
-# resolve before the merge lands. Exit 2 = block; anything else = allow.
+# resolve before the merge lands. With --delete-branch it also removes a clean
+# linked worktree holding the head branch, since gh can't delete a branch that
+# is checked out (dotfiles#125). Exit 2 = block; anything else = allow.
 set -uf  # -f: the merge command is word-split below and must not glob
 command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat)
@@ -10,11 +12,12 @@ case "$cmd" in *"gh pr merge"*) ;; *) exit 0 ;; esac
 
 # Parse the merge command: PR number/url (first bare arg) and -R/--repo.
 set -- $(printf '%s' "$cmd" | sed -n 's/.*gh pr merge//p')
-pr=""; repo=""
+pr=""; repo=""; delete=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -R|--repo) repo=${2:-}; [ $# -gt 1 ] && shift ;;
     --repo=*) repo=${1#--repo=} ;;
+    -d|--delete-branch) delete=1 ;;
     -*) ;;
     *) [ -z "$pr" ] && pr=$1 ;;
   esac
@@ -24,7 +27,9 @@ cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] && cd "$cwd" 2>/dev/null
 repoflag=""; [ -n "$repo" ] && repoflag="-R $repo"
 # The PR url names the base repo even when the head is a fork.
-url=$(gh pr view ${pr:+"$pr"} $repoflag --json url -q .url 2>/dev/null) || exit 0
+info=$(gh pr view ${pr:+"$pr"} $repoflag --json url,headRefName \
+  -q '.url + " " + .headRefName' 2>/dev/null) || exit 0
+url=${info%% *}; head=${info#* }
 owner=$(printf '%s' "$url" | cut -d/ -f4)
 name=$(printf '%s' "$url" | cut -d/ -f5)
 num=$(printf '%s' "$url" | cut -d/ -f7)
@@ -34,9 +39,8 @@ threads=$(gh api graphql -f owner="$owner" -f name="$name" -F num="$num" -f quer
     pullRequest(number:$num){ reviewThreads(first:100){ nodes{
       id isResolved path line comments(first:1){ nodes{ author{login} body url } } } } } } }' \
   -q '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved|not)
-      | "\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | gsub("\n";" ") | .[:160])"' 2>/dev/null) || exit 0
-[ -z "$threads" ] && exit 0
-
+      | "\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | gsub("\n";" ") | .[:160])"' 2>/dev/null) || threads=""
+if [ -n "$threads" ]; then
 cat >&2 <<MSG
 BLOCKED: $owner/$name#$num has unresolved review threads. Read each one, then
 reply on the thread (accept + name the fixing commit, or say why you reject it)
@@ -46,5 +50,42 @@ Resolve with:
   gh api graphql -f query='mutation{resolveReviewThread(input:{threadId:"<thread id>"}){thread{isResolved}}}'
 Unresolved threads (thread id, location, author, url):
 $threads
+MSG
+exit 2
+fi
+
+# gh only deletes the local branch when -R is absent.
+[ -n "$delete" ] && [ -z "$repo" ] || exit 0
+# The first worktree listed is the main checkout; only linked ones are removed.
+wts=$(git worktree list --porcelain 2>/dev/null) || exit 0
+main=$(printf '%s\n' "$wts" | sed -n '1s/^worktree //p')
+wt=$(printf '%s\n' "$wts" | awk -v ref="refs/heads/$head" '
+  /^worktree / { path = substr($0, 10); n++ }
+  $0 == "branch " ref && n > 1 { print path }')
+[ -n "$wt" ] || exit 0
+
+why=""
+case "$(pwd -P)/" in "$(cd "$wt" 2>/dev/null && pwd -P || echo "$wt")"/*)
+  why="$why
+  this command runs inside it; rerun gh pr merge from $main" ;;
+esac
+dirty=$(git -C "$wt" status --porcelain 2>&1)
+[ -n "$dirty" ] && why="$why
+  uncommitted changes or untracked files:
+$(printf '%s\n' "$dirty" | sed 's/^/    /')"
+unpushed=$(git -C "$wt" log --oneline HEAD --not --remotes 2>&1)
+[ -n "$unpushed" ] && why="$why
+  unpushed commits:
+$(printf '%s\n' "$unpushed" | sed 's/^/    /')"
+[ -z "$why" ] && err=$(git worktree remove "$wt" 2>&1) && {
+  echo "pr-merge-gate: removed clean worktree $wt so --delete-branch can delete $head" >&2
+  exit 0
+}
+[ -z "$why" ] && why="
+  git worktree remove failed: $err"
+cat >&2 <<MSG
+BLOCKED: --delete-branch can't delete $head while it is checked out in the
+worktree $wt, and that worktree was left in place:$why
+Commit and push or move that work, then retry the merge.
 MSG
 exit 2
