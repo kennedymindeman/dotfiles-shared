@@ -70,7 +70,7 @@ class WorktreeCleanupTests(unittest.TestCase):
         self.git(self.wt, "add", "tracked")
         result = self.hook()
         self.assertEqual(result.returncode, 2)
-        self.assertIn(str(self.wt), result.stderr)
+        self.assertIn(self.wt.as_posix(), result.stderr)
         self.assertIn("uncommitted", result.stderr)
         self.assertTrue((self.wt / "tracked").exists())
 
@@ -78,7 +78,7 @@ class WorktreeCleanupTests(unittest.TestCase):
         (self.wt / "notes.txt").write_text("keep me")
         result = self.hook()
         self.assertEqual(result.returncode, 2)
-        self.assertIn(str(self.wt), result.stderr)
+        self.assertIn(self.wt.as_posix(), result.stderr)
         self.assertIn("notes.txt", result.stderr)
         self.assertTrue((self.wt / "notes.txt").exists())
 
@@ -86,7 +86,7 @@ class WorktreeCleanupTests(unittest.TestCase):
         self.git(self.wt, "commit", "-q", "--allow-empty", "-m", "local only")
         result = self.hook()
         self.assertEqual(result.returncode, 2)
-        self.assertIn(str(self.wt), result.stderr)
+        self.assertIn(self.wt.as_posix(), result.stderr)
         self.assertIn("unpushed", result.stderr)
         self.assertTrue(self.wt.exists())
 
