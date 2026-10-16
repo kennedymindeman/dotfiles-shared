@@ -4,30 +4,55 @@
 # resolve before the merge lands. With --delete-branch it also removes a clean
 # linked worktree holding the head branch, since gh can't delete a branch that
 # is checked out (dotfiles#125). Exit 2 = block; anything else = allow.
-set -uf  # -f: the merge command is word-split below and must not glob
+set -uf  # -f: $repoflag is word-split below and must not glob
 command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
 case "$cmd" in *"gh pr merge"*) ;; *) exit 0 ;; esac
 
-# Parse the merge command up to the next shell separator: PR number/url
-# (first bare arg), -R/--repo, -d/--delete-branch, and --auto.
-set -- $(printf '%s\n' "$cmd" | sed -n 's/.*gh pr merge//p' | head -n 1 \
-  | sed 's/[;&|].*//')
+# Tokenize with shell rules and parse the merge command up to the next
+# separator, redirection, newline, or comment: PR number/url (first bare arg),
+# -R/--repo, -d/--delete-branch, and --auto/--disable-auto. A `cd` or GH_REPO=
+# before gh breaks the cwd/repo assumptions, so delete stays empty; so it does
+# when python3 is missing or the quoting is unbalanced.
 pr=""; repo=""; delete=""; auto=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -R|--repo) repo=${2:-}; [ $# -gt 1 ] && shift ;;
-    --repo=*) repo=${1#--repo=} ;;
-    -b|--body|-t|--subject|-A|--author-email|-F|--body-file|--match-head-commit)
-      [ $# -gt 1 ] && shift ;;
-    -d|--delete-branch) delete=1 ;;
-    --auto) auto=1 ;;
-    -*) ;;
-    *) [ -z "$pr" ] && pr=$1 ;;
-  esac
-  shift
-done
+eval "$(python3 -c '
+import shlex, sys
+p = ";&|()<>\n"
+l = shlex.shlex(sys.argv[1].replace("\\\n", ""), posix=True, punctuation_chars=p)
+l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
+t = list(l)
+i = next(i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"])
+v = dict(pr="", repo="", delete="", auto="")
+args = iter(t[i + 3:])
+for a in args:
+    if set(a) <= set(p) or a.startswith("#"):
+        break
+    if a in ("-R", "--repo"):
+        v["repo"] = next(args, "")
+    elif a.startswith("--repo="):
+        v["repo"] = a[7:]
+    elif a in ("--body", "--subject", "--author-email", "--body-file", "--match-head-commit"):
+        next(args, "")
+    elif a in ("--delete-branch", "--delete-branch=true"):
+        v["delete"] = "1"
+    elif a.split("=")[0] in ("--auto", "--disable-auto"):
+        v["auto"] = "1"
+    elif a.startswith("-") and not a.startswith("--"):
+        for j, c in enumerate(a[1:], 2):
+            if c in "RbtAF":
+                val = a[j:] or next(args, "")
+                if c == "R":
+                    v["repo"] = val
+                break
+            if c == "d":
+                v["delete"] = "1"
+    elif not a.startswith("-") and not v["pr"]:
+        v["pr"] = a
+if "cd" in t[:i] or any(x.startswith("GH_REPO=") for x in t[:i]):
+    v["delete"] = ""
+print(" ".join(k + "=" + shlex.quote(x) for k, x in v.items()))
+' "$cmd" 2>/dev/null)"
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] && cd "$cwd" 2>/dev/null
 repoflag=""; [ -n "$repo" ] && repoflag="-R $repo"

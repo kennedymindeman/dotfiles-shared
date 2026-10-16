@@ -128,6 +128,41 @@ class WorktreeCleanupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.wt.exists())
 
+    def test_commands_that_must_not_remove_the_worktree(self):
+        for command in [
+            'gh pr merge 1 --squash --body "do not use -d here"',
+            "gh pr merge 1 -s -b 'see -d flag'",
+            'gh pr merge 1 --squash --body="x -d y"',
+            "gh pr merge 1 -s # later -d",
+            "gh pr merge 1 -s\ngit branch -d old",
+            "gh pr merge 1 --disable-auto -d",
+            "gh pr merge 1 --auto=true -d",
+            f"cd {self.main} && gh pr merge 1 -s -d",
+            "GH_REPO=o/r gh pr merge 1 -s -d",
+            "gh pr merge 1 -s -d --body 'unbalanced",
+        ]:
+            with self.subTest(command=command):
+                result = self.hook(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(self.wt.exists())
+
+    def test_combined_short_flags_remove_worktree(self):
+        result = self.hook("gh pr merge 1 -sd")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.wt.exists())
+
+    def test_backslash_continuation_removes_worktree(self):
+        result = self.hook("gh pr merge 1 --squash \\\n  --delete-branch")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.wt.exists())
+
+    def test_unbalanced_quote_still_blocks_on_unresolved_thread(self):
+        self.env["FAKE_THREAD"] = "T1\tf.py:1\tbot\thttps://example.invalid/c1\n    fix"
+        result = self.hook("gh pr merge 1 -s -d --body 'unbalanced")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("T1", result.stderr)
+        self.assertTrue(self.wt.exists())
+
     def test_prunable_worktree_is_pruned_and_merge_allowed(self):
         shutil.rmtree(self.wt)
         result = self.hook()
