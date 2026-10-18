@@ -35,7 +35,7 @@ When you need decisions, ask focused questions with 2–4 concrete options each 
 When you aren't sure what I'm after (the goal, what "done" looks like, or what I want to check), interview me with AskUserQuestion before building or handing me a task. Keep asking in rounds until you could state my goal back in one sentence and I'd agree. Whenever you hand me something to try, say what it's checking and what result to report back.
 
 # Link everything
-When you reference anything at a URL, give the direct link inline as descriptive Markdown link text: the exact product page, the source for a claim, a timestamped video link. Use titled Markdown links in Codex too, preserving its blue clickable styling even while tmux displays the appended URL.
+When you reference anything at a URL, give the direct link inline as descriptive Markdown link text: the exact product page, the source for a claim, a timestamped video link. Use titled Markdown links in Codex too, preserving its blue clickable styling even while tmux displays the appended URL. When you give a street address or name a physical place, link it to Google Maps as `https://www.google.com/maps/search/?api=1&query=<name and address, URL-encoded>`, with the place name as the link text.
 
 # Plain language
 Write like you are talking to a colleague across a desk. Use concrete names, everyday words, and one idea per sentence. If a reply needs a second read, rewrite it. When you mention an issue or PR by number, name what it is in the same sentence, e.g. "#12 (the login timeout fix)". A bare number is fine only when the same reply has already named it.
