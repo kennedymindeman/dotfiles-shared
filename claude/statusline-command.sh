@@ -56,8 +56,24 @@ if [ -n "$week" ]; then
   [ -n "$rl_str" ] && rl_str="$rl_str 7d:$(printf '%.0f' "$week")%" || rl_str="7d:$(printf '%.0f' "$week")%"
 fi
 
+# Pending waits: any tool may drop a one-line file in
+# ~/.cache/claude-wait/<session_id>/ saying what the session waits on. A file
+# named after a PID is dropped once that process is gone.
+wait_str=""
+wdir="$HOME/.cache/claude-wait/$sid"
+if [ -n "$sid" ] && [ -d "$wdir" ]; then
+  for f in "$wdir"/*; do
+    [ -f "$f" ] || continue
+    name=${f##*/}
+    case $name in *[!0-9]*) ;; *) kill -0 "$name" 2>/dev/null || { rm -f "$f"; continue; } ;; esac
+    line=$(head -1 "$f")
+    [ -n "$line" ] && wait_str="${wait_str:+$wait_str; }$line"
+  done
+fi
+[ -n "$wait_str" ] && wait_str="\033[0;33mwaiting: $wait_str\033[0;2m"
+
 out=""
-for part in "$model" "$ctx_str" "$cache_str" "$rl_str"; do
+for part in "$wait_str" "$model" "$ctx_str" "$cache_str" "$rl_str"; do
   [ -z "$part" ] && continue
   if [ -z "$out" ]; then out="$part"; else out="$out · $part"; fi
 done
