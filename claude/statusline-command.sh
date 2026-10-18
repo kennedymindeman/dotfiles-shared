@@ -58,7 +58,9 @@ fi
 
 # Pending waits: any tool may drop a one-line file in
 # ~/.cache/claude-wait/<session_id>/ saying what the session waits on. A file
-# named after a PID is dropped once that process is gone.
+# named after a PID is dropped once that process is gone. A file named `ask`
+# is a step waiting on the user and renders first, as "waiting on you".
+ask_str=""
 wait_str=""
 wdir="$HOME/.cache/claude-wait/$sid"
 if [ -n "$sid" ] && [ -d "$wdir" ]; then
@@ -67,13 +69,15 @@ if [ -n "$sid" ] && [ -d "$wdir" ]; then
     name=${f##*/}
     case $name in *[!0-9]*) ;; *) kill -0 "$name" 2>/dev/null || { rm -f "$f"; continue; } ;; esac
     line=$(head -1 "$f")
-    [ -n "$line" ] && wait_str="${wait_str:+$wait_str; }$line"
+    [ -z "$line" ] && continue
+    if [ "$name" = ask ]; then ask_str=$line; else wait_str="${wait_str:+$wait_str; }$line"; fi
   done
 fi
+[ -n "$ask_str" ] && ask_str="\033[0;33mwaiting on you: $ask_str\033[0;2m"
 [ -n "$wait_str" ] && wait_str="\033[0;33mwaiting: $wait_str\033[0;2m"
 
 out=""
-for part in "$wait_str" "$model" "$ctx_str" "$cache_str" "$rl_str"; do
+for part in "$ask_str" "$wait_str" "$model" "$ctx_str" "$cache_str" "$rl_str"; do
   [ -z "$part" ] && continue
   if [ -z "$out" ]; then out="$part"; else out="$out · $part"; fi
 done
