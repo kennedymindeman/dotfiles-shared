@@ -117,15 +117,14 @@ fi
 
 # bat as a nicer cat, but hand any dash-flags (cat -v/-A/-n/…, which bat
 # rejects) back to the real cat so `cat -v` and flag-passing scripts keep working.
-if command -v bat >/dev/null; then
-  cat() { if [[ ${1-} == -* ]]; then command cat "$@"; else command bat "$@"; fi }
-fi
-if command -v eza >/dev/null; then
-  alias ls='eza'
-  alias ll='eza -l --git'
-  alias la='eza -la --git'
-  alias lt='eza --tree --level=2'
-fi
+# These check for bat/eza on every call, not at shell start: some tools snapshot
+# shell functions and later run them with a narrower PATH that lacks both.
+unalias ls ll la lt 2>/dev/null  # aliases from an older rc would shadow these
+cat() { if [[ ${1-} != -* ]] && command -v bat >/dev/null; then command bat "$@"; else command cat "$@"; fi }
+ls() { if command -v eza >/dev/null; then command eza "$@"; else command ls "$@"; fi }
+ll() { if command -v eza >/dev/null; then command eza -l --git "$@"; else command ls -l "$@"; fi }
+la() { if command -v eza >/dev/null; then command eza -la --git "$@"; else command ls -la "$@"; fi }
+lt() { if command -v eza >/dev/null; then command eza --tree --level=2 "$@"; else command ls "$@"; fi }
 command -v fd >/dev/null && alias fd='fd --hidden --exclude .git'
 if command -v nvim >/dev/null; then
   alias vim='nvim'
