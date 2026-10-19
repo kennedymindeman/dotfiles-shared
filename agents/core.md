@@ -39,3 +39,6 @@ When you reference anything at a URL, give the direct link inline as descriptive
 
 # Plain language
 Write like you are talking to a colleague across a desk. Use concrete names, everyday words, and one idea per sentence. If a reply needs a second read, rewrite it. When you mention an issue or PR by number, name what it is in the same sentence, e.g. "#12 (the login timeout fix)". A bare number is fine only when the same reply has already named it.
+
+# Upgrades
+Before updating anything (a package, dependency, database, OS, firmware, or app), check its release notes or upgrade guide for a required intermediate version. If the jump from the current version to the target skips a required stop, update to that intermediate version first, then to the target.
