@@ -55,7 +55,7 @@ Set-PsFzfOption `
 #  eza aliases (modern ls)
 # -------------------------------
 # Simple list
-if (Get-Command eza -ErrorAction SilentlyContinue) { Set-Alias ls eza }
+if (Get-Command eza -ErrorAction SilentlyContinue) { Set-Alias ls eza -Option AllScope }
 
 # Long/pretty list
 function ll
