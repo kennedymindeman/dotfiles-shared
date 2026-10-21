@@ -459,4 +459,3 @@ function copilot
     & copilot.exe @defaults @args
 }
 
-Set-Alias cc copilot

@@ -214,6 +214,9 @@ function delnote
 
 . "$PSScriptRoot\..\copilot\shell-defaults.ps1"
 
+# Shadows the C compiler only at the prompt; scripts and build tools still get cc.exe.
+if (Get-Command claude -ErrorAction SilentlyContinue) { Set-Alias cc claude -Option AllScope }
+
 # mac-style open: files->default app, .->Explorer, urls->browser
 function open { if ($args.Count) { Start-Process @args } else { Start-Process . } }
 
