@@ -16,6 +16,9 @@ GitHub issues are my to-do list. When I ask to add something, search the repo's 
 # Blind review
 Give reviewers the artifact and acceptance criteria without expected findings.
 
+# Review lanes
+When a diff is larger than you'd read line by line, or handles input someone else controls while taking outward or hard-to-undo actions (sending mail or messages, payments, deletes, unsubscribes, public posts), run reviewers in parallel, one per lens. One `reviewer` checks the spec and correctness. A red-team `reviewer` gets the artifact plus a threat statement: who controls which inputs, and what the code can do outbound. It tries to make the code break a stated rule, and confirms each finding with a probe against fakes. Otherwise, one blind reviewer. The threat statement names the attack surface, not expected findings.
+
 # Review evidence
 For changed interactions, record a short passing flow. For layout changes, compare screenshots at the same viewport. For backend work, retain the relevant test output. Identify the tested commit, any uncommitted changes, and whether the run used synthetic or live data. Keep videos and traces in the approved artifact location, link them from the review, and keep source history in Git. Re-record affected behavior when its code changes. For UI changes in an app, screenshot every state of each changed control (empty, focused, typed, cleared and retyped, stepped, done, carried, relaunched) in the simulator and lay the shots side by side before shipping. When a state is wrong, also record a short video of the steps that cause it.
 
