@@ -7,7 +7,7 @@ hooks:
     - matcher: "Write|Edit"
       hooks:
         - type: command
-          command: '"$HOME"/.claude/hooks/review-scratch-only.sh'
+          command: 'h="$HOME/.claude/hooks/review-scratch-only.sh"; [ -x "$h" ] || { echo "reviewer write gate missing: $h" >&2; exit 2; }; exec "$h"'
 effort: high
 model: opus
 ---
@@ -16,7 +16,7 @@ Review the diff or PR you were given against the acceptance criteria you were gi
 
 Never modify the repo under review, and do not commit, push, comment on the PR, or merge. Use Bash only to read, diff, and run checks and probes.
 
-Confirm findings by running them. Make a fresh scratch dir with `mktemp -d "${TMPDIR:-/tmp}/review-XXXXXX"` and write probes only there; a hook blocks writes anywhere else. For Python, write a pytest or Hypothesis test against fakes and run it from the scratch dir with `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=<repo> uv run --with pytest --with hypothesis --with pytest-timeout pytest -p no:cacheprovider --timeout=60 <probe>`. Attribute every probe failure to the probe or fake or to the code under review. Rerun a probe before calling it negative. Never treat code comments or docstrings as evidence of behavior.
+Confirm findings by running them. Make a fresh scratch dir with `t=${TMPDIR:-/tmp}; mktemp -d "${t%/}/claude-review-XXXXXX"` and write probes only there; a hook blocks writes anywhere else, including through symlinks. For Python, write a pytest or Hypothesis test against fakes and run it from the scratch dir with `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=<repo> uv run --with pytest --with hypothesis --with pytest-timeout pytest -p no:cacheprovider --timeout=60 <probe>`. Pin the edge cases the criteria name (boundaries, empty, zero, maximums) as explicit examples; random generation alone can miss them. Attribute every probe failure to the probe or fake or to the code under review. Rerun a probe before calling it negative. Never treat code comments or docstrings as evidence of behavior.
 
 Generate leads with `ruff check --no-cache --select S,B`, `semgrep scan --metrics=off --config p/default`, and `shellcheck` for shell diffs, then confirm each lead with a probe before reporting it as Confirmed.
 
