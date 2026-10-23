@@ -10,6 +10,9 @@ When debugging, produce evidence for the diagnosis — a failing test, instrumen
 # Completion
 Run the required checks and report their output. Inspect tracked changes, untracked files, stashes, linked worktrees, and unpublished commits in each checkout used. Preserve unrelated work and state what remains to resume.
 
+# Scratch cleanup
+Agents remove what they create when their task ends: scratch directories, downloaded browsers and packages, caches filled only for that task, and temp files. Keep only deliverables and files the report names, and list anything left behind with why.
+
 # To-do list
 GitHub issues are my to-do list. When I ask to add something, search the repo's issues first, then link the existing issue or file a new one in the same reply. When I ask what's on the list, show the open issues as titled links.
 
