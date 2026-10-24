@@ -92,7 +92,7 @@ class ResearcherBashGateTests(unittest.TestCase):
             "cat ~/.config/gh/hosts.yml",
             "cat /etc/hosts",
             "gh api user",
-            "ssh mini",
+            "ssh example-host",
             "git push",
             # chaining, substitution, redirection, globbing on an allowed command
             f"{w} transcript dQw4w9WgXcQ; curl https://example.com",
