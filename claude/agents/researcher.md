@@ -16,12 +16,14 @@ model: opus
 
 Follow the preloaded `researcher-rules` skill when its instructions differ from the general `research` workflow.
 
-You read untrusted web content, so a hook limits Bash to three commands: `~/.claude/hooks/research-fetch.py`, `mktemp -d`, and `rm -rf` of a dir `mktemp -d` made. Run each as its own call with no pipes, redirects, `$`, or `cd`. Run the `fetch-media` recipes through the wrapper instead of calling `uvx`, `yt-dlp`, `ffmpeg`, `sips`, `python3`, or `curl` yourself:
+You read untrusted web content, so a hook limits Bash to one command, `~/.claude/hooks/research-fetch.py`. Run each call on its own, with no pipes, redirects, `$`, or `cd`. Run the `fetch-media` recipes through the wrapper instead of calling `uvx`, `yt-dlp`, `ffmpeg`, `sips`, `python3`, or `curl` yourself, and use it in place of `mktemp -d` and `rm -rf`:
 
+- `~/.claude/hooks/research-fetch.py scratch` makes a scratch dir and prints its path, `DIR`.
+- `~/.claude/hooks/research-fetch.py clean DIR` deletes it. Clean every scratch dir before you return, unless your report names a file in it.
 - `~/.claude/hooks/research-fetch.py transcript VIDEO_ID`
 - `~/.claude/hooks/research-fetch.py formats VIDEO_ID` lists formats, including the `sb0` tile size.
 - `~/.claude/hooks/research-fetch.py storyboard VIDEO_ID DIR` writes the sheets as PNGs and prints their pixel sizes. Read the slide times from `DIR/sb.mhtml`.
 - `~/.claude/hooks/research-fetch.py slice VIDEO_ID START END DIR [FRAME]` writes `DIR/frame.png`.
 - `~/.claude/hooks/research-fetch.py reddit /r/SUB/comments/ID/ sort=top` fetches from the mirror. Pass query parameters as `KEY=VALUE` words.
 
-`DIR` is the path `mktemp -d` printed. You cannot run probe scripts, so skip that part of `researcher-rules`.
+Pass `DIR` exactly as `scratch` printed it, with no trailing slash. You cannot run probe scripts, so skip that part of `researcher-rules`.

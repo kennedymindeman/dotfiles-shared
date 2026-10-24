@@ -1,17 +1,19 @@
 #!/usr/bin/env -S python3 -I
-"""The researcher's one fetch command: the fetch-media recipes behind fixed argv.
+"""The researcher's one Bash command: the fetch-media recipes behind fixed argv.
 
 The researcher's Bash gate (researcher-bash-gate.py) allows this script and
-nothing else that reaches the network, so every argument is validated here and
-passed to a fixed program without a shell.
+nothing else, so every argument is validated here and passed to a fixed program
+without a shell.
 
+  research-fetch.py scratch                 make a scratch dir and print its path
+  research-fetch.py clean DIR               delete a scratch dir
   research-fetch.py transcript VIDEO_ID
   research-fetch.py formats VIDEO_ID
   research-fetch.py storyboard VIDEO_ID DIR
   research-fetch.py slice VIDEO_ID START END DIR [FRAME]
   research-fetch.py reddit /r/SUB/PATH [KEY=VALUE ...]
 
-DIR must be a dir made by `mktemp -d` (yours, mode 700, under the temp dir).
+DIR is a path printed by `scratch`, with no trailing slash.
 """
 
 import email
@@ -19,6 +21,7 @@ import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -28,6 +31,9 @@ VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 TIME = re.compile(r"\d{1,2}(:\d{2}){0,2}(\.\d+)?")
 REDDIT_PATH = re.compile(r"/?r/[A-Za-z0-9_]+(/(?!\.+(/|$))[A-Za-z0-9_.-]+)*/?")
 PARAM = re.compile(r"[A-Za-z_]+=[^\n]*")
+# tempfile.mkdtemp(prefix=PREFIX) appends 8 chars from [a-z0-9_].
+PREFIX = "researcher-"
+SCRATCH_NAME = re.compile(re.escape(PREFIX) + r"[a-z0-9_]{8}")
 MIRROR = "https://red.artemislena.eu"
 FORMAT = "bv[height<=1080][ext=mp4]/bv[height<=1080]/b[height<=1080]"
 
@@ -47,20 +53,53 @@ def video_url(video_id):
 
 
 def scratch_dir(path):
-    """A dir you own, mode 700, under the temp dir: what `mktemp -d` makes."""
-    real = os.path.realpath(path)
+    """A dir `scratch` made: researcher-XXXXXXXX directly in the temp dir, a real
+    directory (not a symlink), yours, mode 700. Returns its resolved path."""
+    # A trailing slash makes lstat follow a symlink, so refuse it outright.
+    if (
+        path.endswith("/")
+        or os.path.normpath(path) != path
+        or not SCRATCH_NAME.fullmatch(os.path.basename(path))
+    ):
+        fail(f"not a scratch dir: {path}")
+    root = os.path.realpath(tempfile.gettempdir())
     try:
-        st = os.lstat(real)
+        st = os.lstat(path)
+        parent = os.path.realpath(os.path.dirname(path))
     except OSError:
-        fail(f"no such dir: {path}")
+        fail(f"no such scratch dir: {path}")
     if not (
-        stat.S_ISDIR(st.st_mode)
+        parent == root
+        and stat.S_ISDIR(st.st_mode)
         and st.st_uid == os.getuid()
         and stat.S_IMODE(st.st_mode) == 0o700
-        and real.startswith(os.path.realpath(tempfile.gettempdir()) + "/")
     ):
-        fail(f"not a mktemp -d scratch dir: {path}")
-    return real
+        fail(f"not a scratch dir: {path}")
+    return os.path.join(root, os.path.basename(path))
+
+
+def fresh(path):
+    """Remove whatever sits at path, a symlink included, so the next write
+    creates a new file instead of following a planted link or reusing old output."""
+    if os.path.lexists(path):
+        os.unlink(path)
+    return path
+
+
+def write_new(path, data):
+    fd = os.open(
+        fresh(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+    )
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+
+def png_size(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as f:
+        header = f.read(24)
+    width, height = struct.unpack(">II", header[16:24])
+    return f"{width}x{height}"
 
 
 def run(argv):
@@ -90,41 +129,98 @@ def ffmpeg():
 def storyboard(video_id, directory):
     url = video_url(video_id)
     directory = scratch_dir(directory)
+    mhtml = fresh(os.path.join(directory, "sb.mhtml"))
+    for entry in os.scandir(directory):
+        if re.fullmatch(r"sheet\d+\.(webp|png)", entry.name):
+            os.unlink(entry.path)
     subprocess.run(
-        ["yt-dlp", "-f", "sb0", "-o", os.path.join(directory, "sb.%(ext)s"), url],
+        [
+            "yt-dlp",
+            "--force-overwrites",
+            "-f",
+            "sb0",
+            "-o",
+            os.path.join(directory, "sb.%(ext)s"),
+            url,
+        ],
         check=True,
     )
     # message_from_bytes: message_from_binary_file eats a trailing byte off some parts.
-    with open(os.path.join(directory, "sb.mhtml"), "rb") as f:
+    fd = os.open(mhtml, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as f:
         parts = email.message_from_bytes(f.read()).walk()
     sheets = [p for p in parts if p.get_content_type().startswith("image/")]
+    # sips ships with macOS; elsewhere ffmpeg reads WebP.
+    ff = None if shutil.which("sips") else ffmpeg()
     for i, part in enumerate(sheets):
         webp = os.path.join(directory, f"sheet{i:02d}.webp")
-        with open(webp, "wb") as f:
-            f.write(part.get_payload(decode=True))
-        png = webp[: -len("webp")] + "png"
-        subprocess.run(
-            ["sips", "-s", "format", "png", webp, "--out", png],
-            check=True,
-            capture_output=True,
+        write_new(webp, part.get_payload(decode=True))
+        png = fresh(webp[: -len("webp")] + "png")
+        convert = (
+            [ff, "-y", "-loglevel", "error", "-i", webp, png]
+            if ff
+            else ["sips", "-s", "format", "png", webp, "--out", png]
         )
-        size = subprocess.run(
-            ["sips", "-g", "pixelWidth", "-g", "pixelHeight", png],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.split()
-        print(png, f"{size[-3]}x{size[-1]}")
-    print(
-        len(sheets), "sheets; slide times are in", os.path.join(directory, "sb.mhtml")
+        subprocess.run(convert, check=True, capture_output=True)
+        print(png, png_size(png))
+    print(len(sheets), "sheets; slide times are in", mhtml)
+
+
+def slice_frame(video_id, start, end, directory, frame="20"):
+    url = video_url(video_id)
+    start, end = (check(TIME, t, "time") for t in (start, end))
+    directory = scratch_dir(directory)
+    frame = int(check(re.compile(r"\d{1,5}"), frame, "frame"))
+    clip = fresh(os.path.join(directory, "clip.mp4"))
+    png = fresh(os.path.join(directory, "frame.png"))
+    ff = ffmpeg()
+    subprocess.run(
+        [
+            "yt-dlp",
+            "--force-overwrites",
+            "--ffmpeg-location",
+            ff,
+            "-f",
+            FORMAT,
+            "--download-sections",
+            f"*{start}-{end}",
+            "-o",
+            clip,
+            url,
+        ],
+        check=True,
     )
+    subprocess.run(
+        [
+            ff,
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            clip,
+            "-vf",
+            f"select=eq(n\\,{frame})",
+            "-vframes",
+            "1",
+            png,
+        ],
+        check=True,
+    )
+    print(png)
 
 
 def main(argv):
     if not argv:
         fail("no subcommand")
     cmd, args = argv[0], argv[1:]
-    if cmd == "transcript" and len(args) == 1:
+    if cmd == "scratch" and not args:
+        print(os.path.realpath(tempfile.mkdtemp(prefix=PREFIX)))
+    elif cmd == "clean" and len(args) == 1:
+        directory = scratch_dir(args[0])
+        if not shutil.rmtree.avoids_symlink_attacks:
+            fail("this platform's rmtree can follow symlinks; refusing to delete")
+        shutil.rmtree(directory)
+    elif cmd == "transcript" and len(args) == 1:
         # `--` so an id starting with "-" is not read as an option.
         run(
             [
@@ -139,49 +235,7 @@ def main(argv):
     elif cmd == "storyboard" and len(args) == 2:
         storyboard(*args)
     elif cmd == "slice" and len(args) in (4, 5):
-        url = video_url(args[0])
-        start, end = (check(TIME, t, "time") for t in args[1:3])
-        directory = scratch_dir(args[3])
-        frame = (
-            int(check(re.compile(r"\d{1,5}"), args[4], "frame"))
-            if len(args) == 5
-            else 20
-        )
-        clip = os.path.join(directory, "clip.mp4")
-        ff = ffmpeg()
-        subprocess.run(
-            [
-                "yt-dlp",
-                "--ffmpeg-location",
-                ff,
-                "-f",
-                FORMAT,
-                "--download-sections",
-                f"*{start}-{end}",
-                "-o",
-                clip,
-                url,
-            ],
-            check=True,
-        )
-        png = os.path.join(directory, "frame.png")
-        subprocess.run(
-            [
-                ff,
-                "-y",
-                "-loglevel",
-                "error",
-                "-i",
-                clip,
-                "-vf",
-                f"select=eq(n\\,{frame})",
-                "-vframes",
-                "1",
-                png,
-            ],
-            check=True,
-        )
-        print(png)
+        slice_frame(*args)
     elif cmd == "reddit" and args:
         path = "/" + check(REDDIT_PATH, args[0], "reddit path").lstrip("/")
         params = [tuple(check(PARAM, p, "KEY=VALUE").split("=", 1)) for p in args[1:]]
