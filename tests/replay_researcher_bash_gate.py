@@ -5,8 +5,7 @@
 Reads ~/.claude/projects/**/subagents/agent-*.jsonl whose .meta.json says
 agentType "researcher", keeps Bash calls from the last --days, and prints how
 many the gate would block and the top reasons. --show prints N blocked commands
-per reason; they are private, so keep them out of PRs. Scratch-dir checks run
-against today's filesystem, so an `rm -rf` of a dir that is gone counts as blocked.
+per reason; they are private, so keep them out of PRs.
 """
 
 import argparse
@@ -47,8 +46,7 @@ def calls(since):
 
 
 def kind(reason):
-    """Group reasons: drop the paths and characters that make each one unique."""
-    reason = re.sub(r"^\S+ is not a dir made", "<path> is not a dir made", reason)
+    """Group reasons: drop the characters that make each one unique."""
     return re.sub(r"^shell syntax not allowed: .*", "shell syntax not allowed", reason)
 
 
