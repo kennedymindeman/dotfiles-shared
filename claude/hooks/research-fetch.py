@@ -57,7 +57,8 @@ def scratch_dir(path):
     directory (not a symlink), yours, mode 700. Returns its resolved path."""
     # A trailing slash makes lstat follow a symlink, so refuse it outright.
     if (
-        path.endswith("/")
+        not os.path.isabs(path)
+        or path.endswith("/")
         or os.path.normpath(path) != path
         or not SCRATCH_NAME.fullmatch(os.path.basename(path))
     ):
@@ -113,6 +114,7 @@ def ffmpeg():
     out = subprocess.run(
         [
             "uvx",
+            "--no-config",
             "--from",
             "imageio-ffmpeg",
             "python",
@@ -129,6 +131,7 @@ def ffmpeg():
 def storyboard(video_id, directory):
     url = video_url(video_id)
     directory = scratch_dir(directory)
+    os.chdir(directory)
     mhtml = fresh(os.path.join(directory, "sb.mhtml"))
     for entry in os.scandir(directory):
         if re.fullmatch(r"sheet\d+\.(webp|png)", entry.name):
@@ -136,6 +139,7 @@ def storyboard(video_id, directory):
     subprocess.run(
         [
             "yt-dlp",
+            "--ignore-config",
             "--force-overwrites",
             "-f",
             "sb0",
@@ -170,6 +174,7 @@ def slice_frame(video_id, start, end, directory, frame="20"):
     url = video_url(video_id)
     start, end = (check(TIME, t, "time") for t in (start, end))
     directory = scratch_dir(directory)
+    os.chdir(directory)
     frame = int(check(re.compile(r"\d{1,5}"), frame, "frame"))
     clip = fresh(os.path.join(directory, "clip.mp4"))
     png = fresh(os.path.join(directory, "frame.png"))
@@ -177,6 +182,7 @@ def slice_frame(video_id, start, end, directory, frame="20"):
     subprocess.run(
         [
             "yt-dlp",
+            "--ignore-config",
             "--force-overwrites",
             "--ffmpeg-location",
             ff,
@@ -206,6 +212,13 @@ def slice_frame(video_id, start, end, directory, frame="20"):
         ],
         check=True,
     )
+    # ffmpeg exits 0 and writes nothing when FRAME is past the clip's end.
+    try:
+        st = os.lstat(png)
+    except OSError:
+        st = None
+    if not (st and stat.S_ISREG(st.st_mode) and st.st_size):
+        fail(f"no frame {frame} in the {start}-{end} clip; pick a lower FRAME")
     print(png)
 
 
@@ -213,6 +226,9 @@ def main(argv):
     if not argv:
         fail("no subcommand")
     cmd, args = argv[0], argv[1:]
+    # Tools read config from their working dir (yt-dlp.conf, uv.toml), so never
+    # run them from wherever the researcher's shell happens to be.
+    os.chdir(os.path.realpath(tempfile.gettempdir()))
     if cmd == "scratch" and not args:
         print(os.path.realpath(tempfile.mkdtemp(prefix=PREFIX)))
     elif cmd == "clean" and len(args) == 1:
@@ -225,13 +241,14 @@ def main(argv):
         run(
             [
                 "uvx",
+                "--no-config",
                 "youtube_transcript_api",
                 "--",
                 check(VIDEO_ID, args[0], "video id"),
             ]
         )
     elif cmd == "formats" and len(args) == 1:
-        run(["yt-dlp", "-F", video_url(args[0])])
+        run(["yt-dlp", "--ignore-config", "-F", video_url(args[0])])
     elif cmd == "storyboard" and len(args) == 2:
         storyboard(*args)
     elif cmd == "slice" and len(args) in (4, 5):

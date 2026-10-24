@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -150,6 +151,36 @@ class ResearcherBashGateTests(unittest.TestCase):
         payload = {"tool_name": "Read", "tool_input": {"command": "x"}}
         self.assertEqual(self.run_gate(payload).returncode, 0)
 
+    def run_guard(self, gate_body=None, mode=0o755):
+        frontmatter = AGENT.read_text(encoding="utf-8").split("---")[1]
+        command = re.search(r"^\s*command: '(.*)'$", frontmatter, re.MULTILINE).group(1)
+        gate = self.home / ".claude/hooks/researcher-bash-gate.py"
+        if gate_body is not None:
+            gate.write_text(gate_body)
+            gate.chmod(mode)
+        return subprocess.run(
+            ["/bin/sh", "-c", command],
+            input="{}",
+            env={**os.environ, "HOME": str(self.home)},
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+    def test_guard_blocks_when_the_gate_is_missing_or_not_executable(self):
+        missing = self.run_guard()
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("gate missing", missing.stderr)
+        self.assertEqual(
+            self.run_guard("#!/bin/sh\nexit 0\n", mode=0o644).returncode, 2
+        )
+
+    def test_guard_runs_the_gate_and_passes_its_exit_code(self):
+        self.assertEqual(
+            self.run_guard("#!/bin/sh\ncat >/dev/null\nexit 0\n").returncode, 0
+        )
+        self.assertEqual(self.run_guard("#!/bin/sh\nexit 2\n").returncode, 2)
+
     def test_agent_frontmatter_wires_the_gate_fail_closed(self):
         text = AGENT.read_text(encoding="utf-8")
         frontmatter = text.split("---")[1]
@@ -176,15 +207,21 @@ class ResearchFetchTests(unittest.TestCase):
         self.bin = base / "bin"
         self.bin.mkdir()
         self.log = base / "calls.log"
+        self.cwds = base / "cwds.log"
         self.mhtml = base / "sb.mhtml"
         self.sheets(2)
         self.png = base / "sheet.png"
         self.png.write_bytes(png(800, 450))
         last = f'for last; do :; done; /bin/cp "{self.png}" "$last"'
-        # yt-dlp skips an existing output unless --force-overwrites, like the
-        # real one; sips and ffmpeg write a PNG to their last argument.
+        # Like the real tools: yt-dlp reads ./yt-dlp.conf unless --ignore-config
+        # and skips an existing output unless --force-overwrites; sips and
+        # ffmpeg write a PNG to their last argument. Every fake logs its cwd.
+        honor = (
+            'if [ -e yt-dlp.conf ]; then case " $* " in *" --ignore-config "*) ;;'
+            f' *) echo "yt-dlp HONORED $(cat yt-dlp.conf)" >> "{self.log}";; esac; fi;'
+        )
         behavior = {
-            "yt-dlp": 'case " $* " in *" sb0 "*) out=; force=;'
+            "yt-dlp": honor + ' case " $* " in *" sb0 "*) out=; force=;'
             ' for a; do [ "$a" = --force-overwrites ] && force=1;'
             ' [ "$prev" = -o ] && out=$a; prev=$a; done;'
             ' dest="$(/usr/bin/dirname "$out")/sb.mhtml";'
@@ -193,12 +230,13 @@ class ResearchFetchTests(unittest.TestCase):
             "sips": last,
             "ffmpeg": last,
             "ffmpeg-fallback": last,
-            "uvx": f'if [ "$1" = --from ]; then echo "{self.bin}/ffmpeg-fallback"; fi',
+            "uvx": f'case " $* " in *" --from "*) echo "{self.bin}/ffmpeg-fallback";; esac',
         }
         for name in ("uvx", "yt-dlp", "curl", "sips", "ffmpeg", "ffmpeg-fallback"):
             fake = self.bin / name
             fake.write_text(
-                f'#!/bin/sh\necho "{name} $*" >> "{self.log}"\n{behavior.get(name, "")}\n'
+                f'#!/bin/sh\necho "{name} $*" >> "{self.log}"\n'
+                f'pwd -P >> "{self.cwds}"\n{behavior.get(name, "")}\n'
             )
             fake.chmod(0o755)
         self.tmp = base / "tmp"
@@ -216,7 +254,7 @@ class ResearchFetchTests(unittest.TestCase):
             message.add_related(f"webp{i}".encode(), maintype="image", subtype="webp")
         self.mhtml.write_bytes(message.as_bytes())
 
-    def fetch(self, *args, tmpdir=None):
+    def fetch(self, *args, tmpdir=None, cwd=None):
         # Keep os.environ so coverage can follow the subprocess.
         env = {**os.environ, "PATH": str(self.bin), "TMPDIR": str(tmpdir or self.tmp)}
         if tmpdir == "":
@@ -224,6 +262,7 @@ class ResearchFetchTests(unittest.TestCase):
         return subprocess.run(
             [sys.executable, "-I", str(FETCH), *args],
             env=env,
+            cwd=cwd,
             capture_output=True,
             check=False,
             text=True,
@@ -329,7 +368,7 @@ class ResearchFetchTests(unittest.TestCase):
         self.assertEqual(
             self.calls(),
             [
-                "uvx youtube_transcript_api -- -bcdefghijk",
+                "uvx --no-config youtube_transcript_api -- -bcdefghijk",
                 (
                     "curl -s -A curl/8.7.1 "
                     "https://red.artemislena.eu/r/python/search?q=a+b%26c%3D1&sort=new"
@@ -339,7 +378,7 @@ class ResearchFetchTests(unittest.TestCase):
 
     def test_formats_lists_the_video(self):
         self.assertEqual(self.fetch("formats", "dQw4w9WgXcQ").returncode, 0)
-        self.assertEqual(self.calls(), [f"yt-dlp -F {VIDEO}"])
+        self.assertEqual(self.calls(), [f"yt-dlp --ignore-config -F {VIDEO}"])
 
     def test_storyboard_writes_png_sheets_with_sizes(self):
         d = self.scratch()
@@ -351,7 +390,7 @@ class ResearchFetchTests(unittest.TestCase):
         self.assertEqual(
             self.calls()[:2],
             [
-                f"yt-dlp --force-overwrites -f sb0 -o {d}/sb.%(ext)s {VIDEO}",
+                f"yt-dlp --ignore-config --force-overwrites -f sb0 -o {d}/sb.%(ext)s {VIDEO}",
                 f"sips -s format png {d}/sheet00.webp --out {d}/sheet00.png",
             ],
         )
@@ -408,7 +447,7 @@ class ResearchFetchTests(unittest.TestCase):
             self.calls()[1:],
             [
                 (
-                    f"yt-dlp --force-overwrites --ffmpeg-location {ff} -f "
+                    f"yt-dlp --ignore-config --force-overwrites --ffmpeg-location {ff} -f "
                     "bv[height<=1080][ext=mp4]/bv[height<=1080]/b[height<=1080] "
                     f"--download-sections *1:00-1:05 -o {d}/clip.mp4 {VIDEO}"
                 ),
@@ -417,6 +456,55 @@ class ResearchFetchTests(unittest.TestCase):
                     f"-vf select=eq(n\\,7) -vframes 1 {d}/frame.png"
                 ),
             ],
+        )
+
+    def test_tools_never_read_config_from_a_hostile_cwd(self):
+        hostile = self.outside / "checkout"
+        hostile.mkdir()
+        (hostile / "yt-dlp.conf").write_text("--exec id")
+        d = self.scratch()
+        # A conf planted in the scratch dir itself, where storyboard runs.
+        Path(d, "yt-dlp.conf").write_text("--exec id")
+        for args in [
+            ("formats", "dQw4w9WgXcQ"),
+            ("storyboard", "dQw4w9WgXcQ", d),
+            ("slice", "dQw4w9WgXcQ", "1:00", "1:05", d),
+            ("transcript", "dQw4w9WgXcQ"),
+            ("reddit", "/r/python"),
+        ]:
+            with self.subTest(args=args):
+                result = self.fetch(*args, cwd=hostile)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse([c for c in self.calls() if "HONORED" in c], self.calls())
+        cwds = set(self.cwds.read_text().split())
+        self.assertEqual(cwds, {d, os.path.realpath(self.tmp)})
+        self.assertIn(
+            "uvx --no-config youtube_transcript_api -- dQw4w9WgXcQ", self.calls()
+        )
+
+    def test_fake_yt_dlp_honors_a_conf_without_ignore_config(self):
+        """Guards the test above: the fake must notice a conf it isn't told to skip."""
+        hostile = self.outside / "checkout"
+        hostile.mkdir()
+        (hostile / "yt-dlp.conf").write_text("--exec id")
+        subprocess.run([str(self.bin / "yt-dlp"), "-F", VIDEO], cwd=hostile, check=True)
+        self.assertIn("yt-dlp HONORED --exec id", self.calls())
+
+    def test_slice_fails_when_ffmpeg_writes_no_frame(self):
+        (self.bin / "ffmpeg").write_text(
+            f'#!/bin/sh\necho "ffmpeg $*" >> "{self.log}"\n'
+        )
+        d = self.scratch()
+        result = self.fetch("slice", "dQw4w9WgXcQ", "1:00", "1:05", d, "9999")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no frame 9999", result.stderr)
+        self.assertNotIn("frame.png", result.stdout)
+        Path(d, "frame.png").write_bytes(b"")
+        (self.bin / "ffmpeg").write_text(
+            '#!/bin/sh\n: > "$(for a; do :; done; echo $a)"\n'
+        )
+        self.assertNotEqual(
+            self.fetch("slice", "dQw4w9WgXcQ", "1:00", "1:05", d).returncode, 0
         )
 
     def test_rejects_bad_arguments_without_running_anything(self):
