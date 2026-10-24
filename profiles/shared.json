@@ -23,6 +23,8 @@
     ".claude/hooks/diff_coverage.py": "claude/hooks/diff_coverage.py",
     ".claude/hooks/git-freshness.sh": "claude/hooks/git-freshness.sh",
     ".claude/hooks/pr-merge-gate.sh": "claude/hooks/pr-merge-gate.sh",
+    ".claude/hooks/research-fetch.py": "claude/hooks/research-fetch.py",
+    ".claude/hooks/researcher-bash-gate.py": "claude/hooks/researcher-bash-gate.py",
     ".claude/hooks/review-scratch-only.sh": "claude/hooks/review-scratch-only.sh",
     ".claude/hooks/skill-ascii.py": "claude/hooks/skill-ascii.py",
     ".claude/themes/catppuccin-mocha.json": "claude/themes/catppuccin-mocha.json"
