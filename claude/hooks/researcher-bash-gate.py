@@ -53,13 +53,14 @@ def is_scratch(path):
         parent = os.path.realpath(os.path.dirname(path.rstrip("/")))
     except OSError:
         return False
-    roots = {os.path.realpath(p) for p in (tempfile.gettempdir(), "/tmp")}
+    # mktemp -d and gettempdir() both use $TMPDIR when set, else /tmp.
+    root = os.path.realpath(tempfile.gettempdir())
     return (
         stat.S_ISDIR(st.st_mode)
         and st.st_uid == os.getuid()
         and stat.S_IMODE(st.st_mode) == 0o700
         and MKTEMP_NAME.fullmatch(os.path.basename(path.rstrip("/"))) is not None
-        and any(parent == root or parent.startswith(root + "/") for root in roots)
+        and (parent == root or parent.startswith(root + "/"))
     )
 
 

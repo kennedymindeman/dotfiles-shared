@@ -46,10 +46,6 @@ def video_url(video_id):
     return "https://www.youtube.com/watch?v=" + check(VIDEO_ID, video_id, "video id")
 
 
-def temp_roots():
-    return {os.path.realpath(p) for p in (tempfile.gettempdir(), "/tmp")}
-
-
 def scratch_dir(path):
     """A dir you own, mode 700, under the temp dir: what `mktemp -d` makes."""
     real = os.path.realpath(path)
@@ -61,7 +57,7 @@ def scratch_dir(path):
         stat.S_ISDIR(st.st_mode)
         and st.st_uid == os.getuid()
         and stat.S_IMODE(st.st_mode) == 0o700
-        and any(real.startswith(root + "/") for root in temp_roots())
+        and real.startswith(os.path.realpath(tempfile.gettempdir()) + "/")
     ):
         fail(f"not a mktemp -d scratch dir: {path}")
     return real
