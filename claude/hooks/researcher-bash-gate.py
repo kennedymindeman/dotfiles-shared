@@ -10,9 +10,10 @@ argv shlex sees is the argv the shell runs. No fetch-media recipe needs more:
 the wrapper takes video ids and KEY=VALUE pairs instead of URLs with ? and &.
 Two exceptions: the literal leading `~/.claude/hooks/research-fetch.py`, whose
 tilde expands to this hook's own idea of home, and the URL of `get`, which may
-hold ? & = # and the like when it is one single-quoted word. Nothing expands
-inside single quotes, and the URL may not contain a quote, space, or control
-character, so the word cannot end early.
+hold ? & = # and printable non-ASCII when it is one single-quoted word.
+Nothing expands inside single quotes, and the URL may not contain a quote,
+space, control, or format character (no bidi overrides or zero-width
+characters), so the word cannot end early or display as something else.
 """
 
 import json
@@ -47,8 +48,10 @@ def check(command):
     tilde = "~/.claude/hooks/research-fetch.py"
     if command == tilde or command.startswith(tilde + " "):
         command = WRAPPER + command[len(tilde) :]
-    url = re.match(re.escape(WRAPPER) + r" get ('[!-&(-~]+')( |$)", command)
-    if url:
+    url = re.match(re.escape(WRAPPER) + r" get ('[^'\s]+')( |$)", command)
+    if url and all(
+        "!" <= c <= "~" or (c > "\x7f" and c.isprintable()) for c in url.group(1)[1:-1]
+    ):
         command = command[: url.start(1)] + "URL" + command[url.end(1) :]
     bad = sorted(set(SAFE.sub("", command)))
     if bad:

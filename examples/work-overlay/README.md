@@ -14,8 +14,10 @@ because every search query and fetched URL goes to Exa. To turn it on, add
 `".copilot/mcp-config.json": "copilot/mcp-config.exa.json"` to the `files` map in
 `profiles/work.json` and supply the key in `EXA_API_KEY` from a credential manager.
 `copilot/sensitive.json` lists `EXA_API_KEY` so Copilot treats it as a secret.
-Check with `/mcp` that the server connects: the `${EXA_API_KEY}` header value
-relies on Copilot expanding environment variables in MCP headers.
+To check the key, ask Copilot to run one `web_search_exa` search. A 401 "Invalid
+API key" means the `${EXA_API_KEY}` header did not reach Exa, for example because
+Copilot did not expand it. `/mcp` shows the server as connected even with a bad
+key, so it is not a check.
 
 Keep `profiles/work.json`: its name declares that this is a work overlay. An empty
 `files` map is sufficient for the optional Git and agent files. Add mappings only
