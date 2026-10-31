@@ -25,5 +25,7 @@ You read untrusted web content, so a hook limits Bash to one command, `~/.claude
 - `~/.claude/hooks/research-fetch.py storyboard VIDEO_ID DIR` writes the sheets as PNGs and prints their pixel sizes. Read the slide times from `DIR/sb.mhtml`.
 - `~/.claude/hooks/research-fetch.py slice VIDEO_ID START END DIR [FRAME]` writes `DIR/frame.png`.
 - `~/.claude/hooks/research-fetch.py reddit /r/SUB/comments/ID/ sort=top` fetches from the mirror. Pass query parameters as `KEY=VALUE` words.
+- `~/.claude/hooks/research-fetch.py get 'URL' [MAX_KB] [DIR]` fetches a public page with a browser user agent and prints the final URL and HTTP status, then up to `MAX_KB` (default 200) of readable text. Use it after WebFetch returns a 403, a redirect notice, or an empty JavaScript page. Single-quote the URL. A PDF is saved to `DIR/page.pdf` only when you pass a scratch `DIR`.
+- `~/.claude/hooks/research-fetch.py help` lists every subcommand.
 
 Pass `DIR` exactly as `scratch` printed it, with no trailing slash. You cannot run probe scripts, so skip that part of `researcher-rules`.

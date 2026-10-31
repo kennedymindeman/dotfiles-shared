@@ -5,26 +5,39 @@ The researcher's Bash gate (researcher-bash-gate.py) allows this script and
 nothing else, so every argument is validated here and passed to a fixed program
 without a shell.
 
+  research-fetch.py help                    print this usage
   research-fetch.py scratch                 make a scratch dir and print its path
   research-fetch.py clean DIR               delete a scratch dir
-  research-fetch.py transcript VIDEO_ID
-  research-fetch.py formats VIDEO_ID
-  research-fetch.py storyboard VIDEO_ID DIR
+  research-fetch.py transcript VIDEO_ID     print a YouTube video's transcript
+  research-fetch.py formats VIDEO_ID        list a video's formats, sb0 included
+  research-fetch.py storyboard VIDEO_ID DIR write storyboard sheets as PNGs
   research-fetch.py slice VIDEO_ID START END DIR [FRAME]
+                                            write one video frame to DIR/frame.png
   research-fetch.py reddit /r/SUB/PATH [KEY=VALUE ...]
+                                            fetch a Reddit page from a mirror
+  research-fetch.py get 'URL' [MAX_KB] [DIR]
+                                            fetch a public web page as text, for
+                                            when WebFetch gets a 403, a redirect
+                                            notice, or an empty JavaScript page
 
-DIR is a path printed by `scratch`, with no trailing slash.
+DIR is a path printed by `scratch`, with no trailing slash. `get` prints the
+final URL and HTTP status first, then at most MAX_KB (default 200) of text; it
+saves a PDF to DIR/page.pdf only when DIR is given. Single-quote the URL.
 """
 
 import email
+import html.parser
+import ipaddress
 import os
 import re
 import shutil
+import socket
 import stat
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
@@ -36,10 +49,221 @@ PREFIX = "researcher-"
 SCRATCH_NAME = re.compile(re.escape(PREFIX) + r"[a-z0-9_]{8}")
 MIRROR = "https://red.artemislena.eu"
 FORMAT = "bv[height<=1080][ext=mp4]/bv[height<=1080]/b[height<=1080]"
+# Printable ASCII with no backslash, quote, or space, so Python and curl parse
+# the same host out of it.
+URL_CHARS = re.compile(r"[!#-&(-\[\]-~]+")
+CHROME = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    " (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+)
+ACCEPT = (
+    "text/html,application/xhtml+xml,application/xml;q=0.9,"
+    "image/avif,image/webp,*/*;q=0.8"
+)
+MAX_REDIRECTS = 5
+TIMEOUT = 30
+RAW_CAP = 20 * 1024 * 1024
+TEXT_TYPES = re.compile(
+    r"text/.*|application/(json|xml|javascript|ld\+json|.*\+(xml|json))"
+)
+SKIP_TAGS = {"script", "style", "nav", "noscript", "template", "svg"}
+BLOCK_TAGS = {
+    "p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+    "section", "article", "header", "footer", "pre", "blockquote", "table",
+    "ul", "ol", "dt", "dd", "title",
+}  # fmt: skip
 
 
 def fail(message):
     sys.exit(f"research-fetch: {message}\n{__doc__}")
+
+
+def public_address(host, port):
+    """Resolve host and return one address to pin, refusing loopback, private,
+    link-local, metadata, and other non-public addresses."""
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except OSError as e:
+        fail(f"cannot resolve {host}: {e}")
+    addresses = []
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        embedded = getattr(ip, "ipv4_mapped", None)
+        if ip.version == 6 and ip in ipaddress.ip_network("64:ff9b::/96"):
+            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if not ip.is_global or ip.is_multicast or (embedded and not embedded.is_global):
+            fail(f"refusing non-public address {ip} for {host}")
+        addresses.append(ip)
+    if not addresses:
+        fail(f"no address for {host}")
+    return addresses[0]
+
+
+class Text(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self.skip = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in SKIP_TAGS:
+            self.skip += 1
+        elif tag in BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in SKIP_TAGS:
+            self.skip = max(0, self.skip - 1)
+        elif tag in BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.parts.append(data)
+
+    def text(self):
+        lines = (" ".join(line.split()) for line in "".join(self.parts).splitlines())
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def fetch_once(url, body_path, header_path, deadline):
+    """One request with no redirect following; the host is pinned to the
+    address public_address checked, so DNS can't change between check and use."""
+    if not URL_CHARS.fullmatch(url):
+        fail(f"bad URL: {url!r}")
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        fail(f"only http and https URLs are allowed: {url}")
+    if "@" in parts.netloc:
+        fail(f"URLs with credentials are not allowed: {url}")
+    try:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        fail(f"bad port in {url}")
+    ip = public_address(parts.hostname, port)
+    pin = f"[{ip}]" if ip.version == 6 else str(ip)
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    remaining = int(deadline - time.monotonic())
+    if remaining <= 0:
+        fail("timed out")
+    proc = subprocess.Popen(
+        [
+            "curl",
+            "-q",  # first, so no ~/.curlrc adds options
+            "-sS",
+            "--compressed",
+            "--proto",
+            "=http,https",
+            "--proto-redir",
+            "=http,https",
+            "--noproxy",
+            "*",
+            "--resolve",
+            f"{host}:{port}:{pin}",
+            "--max-time",
+            str(remaining),
+            "--max-filesize",
+            str(RAW_CAP),
+            "-A",
+            CHROME,
+            "-H",
+            f"Accept: {ACCEPT}",
+            "-H",
+            "Accept-Language: en-US,en;q=0.9",
+            "-D",
+            header_path,
+            "-o",
+            "-",
+            "--",
+            url,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    body = proc.stdout.read(RAW_CAP + 1)
+    if len(body) > RAW_CAP:
+        proc.kill()
+        fail(f"response is larger than {RAW_CAP // (1024 * 1024)} MB: {url}")
+    _, err = proc.communicate()
+    if proc.returncode:
+        fail(f"curl failed for {url}: {err.decode(errors='replace').strip()}")
+    write_new(body_path, body)
+    with open(header_path, "rb") as f:
+        blocks = re.split(rb"\r?\n\r?\n", f.read().strip())
+    lines = blocks[-1].decode("latin-1").splitlines()
+    headers = {}
+    for line in lines[1:]:
+        name, _, value = line.partition(":")
+        headers[name.strip().lower()] = value.strip()
+    return int(lines[0].split()[1]), headers
+
+
+def download(url):
+    """Follow up to MAX_REDIRECTS redirects, checking each hop's scheme and
+    address, and return the final URL, status, headers, and body."""
+    deadline = time.monotonic() + TIMEOUT
+    work = tempfile.mkdtemp(prefix="research-get-")
+    try:
+        body_path = os.path.join(work, "body")
+        header_path = os.path.join(work, "headers")
+        for _ in range(MAX_REDIRECTS + 1):
+            status, headers = fetch_once(url, body_path, header_path, deadline)
+            if not (300 <= status < 400 and headers.get("location")):
+                with open(body_path, "rb") as f:
+                    return url, status, headers, f.read()
+            url = urllib.parse.urljoin(url, headers["location"])
+        fail(f"more than {MAX_REDIRECTS} redirects")
+    finally:
+        shutil.rmtree(work)
+
+
+def show_text(body, kind, params, max_kb):
+    charset = re.search(r"charset=\"?([\w.:-]+)", params)
+    try:
+        text = body.decode(charset.group(1) if charset else "utf-8", "replace")
+    except LookupError:
+        text = body.decode("utf-8", "replace")
+    if not kind and "\x00" in text:
+        fail("refusing binary content with no content type")
+    if kind in ("text/html", "application/xhtml+xml") or (
+        not kind and "<html" in text[:1024].lower()
+    ):
+        parser = Text()
+        parser.feed(text)
+        parser.close()
+        text = parser.text()
+    cap = max_kb * 1024
+    data = text.encode()
+    sys.stdout.write(data[:cap].decode(errors="ignore"))
+    if len(data) > cap:
+        sys.stdout.write(f"\n[truncated at {max_kb} KB; pass a larger MAX_KB]")
+    sys.stdout.write("\n")
+
+
+def get(url, *rest):
+    max_kb, directory = 200, None
+    for arg in rest:
+        if re.fullmatch(r"\d{1,5}", arg) and int(arg) > 0:
+            max_kb = int(arg)
+        elif arg.startswith("/"):
+            directory = scratch_dir(arg)
+        else:
+            fail(f"bad argument to get: {arg!r}")
+    url, status, headers, body = download(url)
+    print(url, status)
+    kind, _, params = headers.get("content-type", "").partition(";")
+    kind = kind.strip().lower()
+    if kind == "application/pdf" or (not kind and body.startswith(b"%PDF")):
+        if not directory:
+            fail("this is a PDF; pass a scratch DIR to save it as DIR/page.pdf")
+        pdf = os.path.join(directory, "page.pdf")
+        write_new(pdf, body)
+        print(pdf, len(body), "bytes")
+    elif kind and not TEXT_TYPES.fullmatch(kind):
+        fail(f"refusing binary content type {kind}")
+    else:
+        show_text(body, kind, params, max_kb)
+    if status >= 400:
+        sys.exit(1)
 
 
 def check(pattern, value, name):
@@ -223,9 +447,7 @@ def slice_frame(video_id, start, end, directory, frame="20"):
 
 
 def main(argv):
-    if not argv:
-        fail("no subcommand")
-    cmd, args = argv[0], argv[1:]
+    cmd, args = (argv or ["(none)"])[0], argv[1:]
     # Tools read config from their working dir (yt-dlp.conf, uv.toml), so never
     # run them from wherever the researcher's shell happens to be.
     os.chdir(os.path.realpath(tempfile.gettempdir()))
@@ -258,9 +480,14 @@ def main(argv):
         params = [tuple(check(PARAM, p, "KEY=VALUE").split("=", 1)) for p in args[1:]]
         query = "?" + urllib.parse.urlencode(params) if params else ""
         run(["curl", "-s", "-A", "curl/8.7.1", MIRROR + path + query])
+    elif cmd == "get" and 1 <= len(args) <= 3:
+        get(*args)
     else:
         fail(f"unknown subcommand or wrong argument count: {cmd!r}")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    if sys.argv[1:] in (["help"], ["--help"], ["-h"]):
+        print(__doc__)
+    else:
+        main(sys.argv[1:])

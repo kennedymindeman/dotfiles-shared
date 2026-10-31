@@ -1,3 +1,8 @@
+import contextlib
+import http.server
+import importlib.util
+import io
+import ipaddress
 import json
 import os
 import re
@@ -6,6 +11,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from email.message import EmailMessage
 from pathlib import Path
@@ -62,6 +68,11 @@ class ResearcherBashGateTests(unittest.TestCase):
             f"{TILDE} slice dQw4w9WgXcQ 1:02 1:07 {self.tmp}/researcher-abcd1234 20",
             f"{TILDE} reddit /r/python/search 'q=type hints' sort=new",
             TILDE,
+            f"{TILDE} help",
+            f"{TILDE} get https://example.com/a/b",
+            f"{TILDE} get 'https://example.com/s?q=a&b=c#frag'",
+            f"{TILDE} get 'https://example.com/!$`(x)*~;|<>{{}}[]^%20' 50",
+            f"{self.wrapper} get 'https://example.com/?a=1' 50 {self.tmp}/researcher-abcd1234",
         ]:
             with self.subTest(command=command):
                 self.assertAllowed(command)
@@ -126,6 +137,25 @@ class ResearcherBashGateTests(unittest.TestCase):
             f"PATH=/tmp/evil {self.wrapper} scratch",
             "=curl example.com",
             f"{w} 'unbalanced",
+            # get: only the single-quoted URL word escapes the character check
+            f"{w} get https://example.com/?a=1",
+            f"{w} get https://example.com/a&id",
+            f'{w} get "https://example.com/?a=$(id)"',
+            f"{w} get 'https://example.com/' ; id",
+            f"{w} get 'https://example.com/' && id",
+            f"{w} get 'https://example.com/' | sh",
+            f"{w} get 'https://example.com/' > /tmp/x",
+            f"{w} get 'https://example.com/' 50 '?'",
+            f"{w} get 'https://example.com/''$(id)'",
+            f"{w} get 'https://example.com/'$(id)",
+            f"{w} get $'https://example.com/\\x27'",
+            f"{w} get 'https://example.com/\nid'",
+            f"{w} get 'https://example.com/'\nid",
+            f"{w} transcript 'a?b'",
+            f"{w} reddit '/r/x?y'",
+            f"{w}  get 'https://example.com/?a'",
+            "curl 'https://example.com/?a'",
+            f"{w}x get 'https://example.com/?a'",
             "",
             "   ",
         ]:
@@ -522,11 +552,207 @@ class ResearchFetchTests(unittest.TestCase):
             ("scratch", "extra"),
             ("clean",),
             ("shell", "id"),
+            ("get",),
+            ("get", ""),
+            ("get", "https://example.com/ x"),
+            ("get", "https://example.com/", "0"),
+            ("get", "https://example.com/", "x"),
+            ("get", "https://example.com/", "1", "2", "3"),
             (),
         ]:
             with self.subTest(args=args):
                 self.assertNotEqual(self.fetch(*args).returncode, 0)
         self.assertEqual(self.calls(), [])
+
+    def test_help_lists_every_subcommand(self):
+        for args in [("help",), ("--help",)]:
+            with self.subTest(args=args):
+                result = self.fetch(*args)
+                self.assertEqual(result.returncode, 0)
+                for cmd in (
+                    "scratch",
+                    "clean",
+                    "transcript",
+                    "formats",
+                    "storyboard",
+                    "slice",
+                    "reddit",
+                    "get",
+                ):
+                    self.assertIn(f"research-fetch.py {cmd}", result.stdout)
+        for args in [(), ("nope",), ("get",)]:
+            with self.subTest(args=args):
+                result = self.fetch(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("research-fetch.py get 'URL'", result.stderr)
+
+
+PAGES = {
+    "/page": (
+        200,
+        "text/html; charset=utf-8",
+        (
+            b"<html><head><title>T</title><script>var secret=1</script>"
+            b"<style>p{}</style></head><body><nav>Menu</nav><p>Hello &amp; bye</p>"
+            b"</body></html>"
+        ),
+    ),
+    "/big": (200, "text/plain", b"x" * 5000),
+    "/json": (200, "application/json", b'{"a": 1}'),
+    "/png": (200, "image/png", b"\x89PNG\r\n\x1a\n"),
+    "/pdf": (200, "application/pdf", b"%PDF-1.4 fake"),
+    "/missing": (404, "text/html", b"<p>gone</p>"),
+}
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.server.requests.append((self.path, self.headers.get("User-Agent")))
+        port = self.server.server_address[1]
+        redirects = {
+            "/to-page?a=1&b=2": f"http://127.0.0.1:{port}/page",
+            "/relative": "page",
+            "/to-private": "http://169.254.169.254/latest/meta-data/",
+            "/to-localhost": f"http://localhost:{port}/page",
+            "/to-file": "file:///etc/passwd",
+            "/loop": "/loop",
+        }
+        if self.path in redirects:
+            self.send_response(302)
+            self.send_header("Location", redirects[self.path])
+            self.end_headers()
+            return
+        status, kind, body = PAGES[self.path]
+        self.send_response(status)
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+@unittest.skipIf(os.name == "nt", "needs a POSIX shell environment")
+@unittest.skipUnless(shutil.which("curl"), "needs curl")
+class ResearchGetTests(unittest.TestCase):
+    """`get` against a local server with the real curl. The server is on
+    loopback, which `get` refuses, so most tests load the wrapper in-process and
+    let only 127.0.0.1 through; the refusal test runs it unpatched."""
+
+    def setUp(self):
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.requests = []
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        spec = importlib.util.spec_from_file_location("research_fetch", FETCH)
+        self.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mod)
+        real = self.mod.public_address
+        self.mod.public_address = lambda host, port: (
+            ipaddress.ip_address(host) if host == "127.0.0.1" else real(host, port)
+        )
+
+    def get(self, *args):
+        """Returns (exit code, stdout, failure message)."""
+        out = io.StringIO()
+        code, message = 0, ""
+        with contextlib.redirect_stdout(out):
+            try:
+                self.mod.get(*args)
+            except SystemExit as e:
+                code = e.code
+                message = code if isinstance(code, str) else ""
+        return code, out.getvalue(), message
+
+    def test_html_becomes_readable_text_with_the_final_url_first(self):
+        code, out, _ = self.get(self.base + "/to-page?a=1&b=2")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.splitlines()[0], f"{self.base}/page 200")
+        self.assertIn("Hello & bye", out)
+        for dropped in ("secret", "p{}", "Menu"):
+            self.assertNotIn(dropped, out)
+        self.assertIn("Chrome/", self.server.requests[0][1])
+
+    def test_relative_redirects_and_text_types(self):
+        self.assertIn(f"{self.base}/page 200", self.get(self.base + "/relative")[1])
+        self.assertIn('{"a": 1}', self.get(self.base + "/json")[1])
+
+    def test_caps_output_at_max_kb(self):
+        code, out, _ = self.get(self.base + "/big", "2")
+        self.assertEqual(code, 0)
+        body = out.split("\n", 1)[1]
+        self.assertEqual(body.count("x"), 2048)
+        self.assertIn("[truncated at 2 KB", body)
+        self.assertEqual(self.get(self.base + "/big")[1].count("x"), 5000)
+
+    def test_refuses_binary_and_saves_pdf_only_to_a_scratch_dir(self):
+        self.assertIn("binary content type image/png", self.get(self.base + "/png")[2])
+        self.assertIn("pass a scratch DIR", self.get(self.base + "/pdf")[2])
+        base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, base)
+        scratch = base / "researcher-abcd1234"
+        scratch.mkdir(mode=0o700)
+        saved, tempfile.tempdir = tempfile.tempdir, str(base)
+        try:
+            code, _, _ = self.get(self.base + "/pdf", str(scratch))
+        finally:
+            tempfile.tempdir = saved
+        self.assertEqual(code, 0)
+        self.assertEqual((scratch / "page.pdf").read_bytes(), b"%PDF-1.4 fake")
+
+    def test_error_status_prints_the_page_and_exits_nonzero(self):
+        code, out, _ = self.get(self.base + "/missing")
+        self.assertEqual(code, 1)
+        self.assertIn("/missing 404", out)
+        self.assertIn("gone", out)
+
+    def test_refuses_redirects_to_private_addresses_and_other_schemes(self):
+        for path, reason in [
+            ("/to-private", "non-public address 169.254.169.254"),
+            ("/to-localhost", "non-public address"),
+            ("/to-file", "only http and https"),
+            ("/loop", "more than 5 redirects"),
+        ]:
+            with self.subTest(path=path):
+                code, out, message = self.get(self.base + path)
+                self.assertNotEqual(code, 0)
+                self.assertIn(reason, message)
+                self.assertEqual(out, "")
+        self.assertNotIn("/page", [p for p, _ in self.server.requests])
+
+    def test_unpatched_wrapper_refuses_private_addresses_and_schemes(self):
+        port = self.server.server_address[1]
+        for url in [
+            self.base + "/page",
+            f"http://localhost:{port}/page",
+            f"http://[::1]:{port}/page",
+            f"http://2130706433:{port}/page",
+            "http://10.0.0.1/",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://100.100.100.200/",
+            "http://[fd00:ec2::254]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[64:ff9b::7f00:1]/",
+            "file:///etc/passwd",
+            "ftp://example.com/",
+            "gopher://example.com/",
+            "http://user@example.com/",
+            "http://example.com\\@127.0.0.1/",
+        ]:
+            with self.subTest(url=url):
+                result = subprocess.run(
+                    [sys.executable, "-I", str(FETCH), "get", url],
+                    capture_output=True,
+                    check=False,
+                    text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+        self.assertEqual(self.server.requests, [])
 
 
 if __name__ == "__main__":
