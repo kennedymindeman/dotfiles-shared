@@ -7,6 +7,16 @@ locally. Replace or remove `agents/work.md` to match the environment's rules.
 `copilot/subagents.json` pins the Copilot agents to one model version; change it
 to a model your plan offers, or delete it.
 
+`copilot/mcp-config.exa.json` registers [Exa's hosted MCP server](https://docs.exa.ai/reference/exa-mcp)
+so the Copilot `researcher` has a web search tool; the shared launcher disables
+Copilot's built-in one. It is off by default. Turn it on only with work approval,
+because every search query and fetched URL goes to Exa. To turn it on, add
+`".copilot/mcp-config.json": "copilot/mcp-config.exa.json"` to the `files` map in
+`profiles/work.json` and supply the key in `EXA_API_KEY` from a credential manager.
+`copilot/sensitive.json` lists `EXA_API_KEY` so Copilot treats it as a secret.
+Check with `/mcp` that the server connects: the `${EXA_API_KEY}` header value
+relies on Copilot expanding environment variables in MCP headers.
+
 Keep `profiles/work.json`: its name declares that this is a work overlay. An empty
 `files` map is sufficient for the optional Git and agent files. Add mappings only
 for extra configuration the environment needs; do not copy shared files into the overlay.

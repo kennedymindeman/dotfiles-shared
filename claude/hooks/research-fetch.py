@@ -16,9 +16,10 @@ without a shell.
   research-fetch.py reddit /r/SUB/PATH [KEY=VALUE ...]
                                             fetch a Reddit page from a mirror
   research-fetch.py get 'URL' [MAX_KB] [DIR]
-                                            fetch a public web page as text, for
-                                            when WebFetch gets a 403, a redirect
-                                            notice, or an empty JavaScript page
+                                            fetch a public web page with curl as
+                                            text, for when WebFetch gets a 403,
+                                            a redirect notice, or an empty
+                                            JavaScript page
 
 DIR is a path printed by `scratch`, with no trailing slash. `get` prints the
 final URL and HTTP status first, then at most MAX_KB (default 200) of text; it
@@ -28,6 +29,7 @@ saves a PDF to DIR/page.pdf only when DIR is given. Single-quote the URL.
 import email
 import html.parser
 import ipaddress
+import math
 import os
 import re
 import shutil
@@ -49,17 +51,23 @@ PREFIX = "researcher-"
 SCRATCH_NAME = re.compile(re.escape(PREFIX) + r"[a-z0-9_]{8}")
 MIRROR = "https://red.artemislena.eu"
 FORMAT = "bv[height<=1080][ext=mp4]/bv[height<=1080]/b[height<=1080]"
-# Printable ASCII with no backslash, quote, or space, so Python and curl parse
-# the same host out of it.
+# Printable ASCII with no backslash, quote, or space.
 URL_CHARS = re.compile(r"[!#-&(-\[\]-~]+")
-CHROME = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-    " (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+# A hostname is letters, digits, and hyphens in dot-separated labels. A name
+# whose last label is numeric is an IPv4 address in some notation (0177.0.0.1,
+# 0x7f.1, 2130706433) that resolvers and curl read differently, so only the
+# canonical dotted-decimal form ipaddress prints is accepted for those.
+HOSTNAME = re.compile(
+    r"([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?\.?"
 )
-ACCEPT = (
-    "text/html,application/xhtml+xml,application/xml;q=0.9,"
-    "image/avif,image/webp,*/*;q=0.8"
-)
+NUMERIC_LABEL = re.compile(r"(0x[0-9a-f]*|[0-9]+)\.?")
+# Not covered by is_global: IPv4-compatible, IPv4-mapped, SIIT, site-local.
+REFUSED_V6 = [
+    ipaddress.ip_network(n)
+    for n in ("::/96", "::ffff:0:0/96", "::ffff:0:0:0/96", "fec0::/10")
+]
+NAT64 = ipaddress.ip_network("64:ff9b::/96")
+ACCEPT = "text/html,*/*;q=0.8"
 MAX_REDIRECTS = 5
 TIMEOUT = 30
 RAW_CAP = 20 * 1024 * 1024
@@ -82,21 +90,64 @@ def public_address(host, port):
     """Resolve host and return one address to pin, refusing loopback, private,
     link-local, metadata, and other non-public addresses."""
     try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except OSError as e:
-        fail(f"cannot resolve {host}: {e}")
+        found = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        except OSError as e:
+            fail(f"cannot resolve {host}: {e}")
+        found = [ipaddress.ip_address(info[4][0].split("%")[0]) for info in infos]
     addresses = []
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0].split("%")[0])
-        embedded = getattr(ip, "ipv4_mapped", None)
-        if ip.version == 6 and ip in ipaddress.ip_network("64:ff9b::/96"):
+    for ip in found:
+        embedded = None
+        if ip.version == 6 and ip in NAT64:
             embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-        if not ip.is_global or ip.is_multicast or (embedded and not embedded.is_global):
+        if (
+            not ip.is_global
+            or ip.is_multicast
+            or (ip.version == 6 and any(ip in net for net in REFUSED_V6))
+            or (embedded and not embedded.is_global)
+        ):
             fail(f"refusing non-public address {ip} for {host}")
         addresses.append(ip)
     if not addresses:
         fail(f"no address for {host}")
     return addresses[0]
+
+
+def split_url(url):
+    """Return (host, port) for an http(s) URL whose host is a plain hostname
+    or a canonical IP literal, so the address checked is the address meant."""
+    if not URL_CHARS.fullmatch(url):
+        fail(f"bad URL: {url!r}")
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        fail(f"bad URL: {url}")
+    if parts.scheme not in ("http", "https"):
+        fail(f"only http and https URLs are allowed: {url}")
+    if "@" in parts.netloc:
+        fail(f"URLs with credentials are not allowed: {url}")
+    netloc = parts.netloc.lower()
+    host = parts.hostname or ""
+    bracketed = netloc.startswith("[")
+    shown = f"[{host}]" if bracketed else host
+    if netloc not in (shown, f"{shown}:{parts.port}"):
+        fail(f"bad host in {url}")
+    try:
+        ip = ipaddress.IPv6Address(host) if bracketed else ipaddress.ip_address(host)
+        canonical = str(ip) == host
+    except ValueError:
+        last = host.rstrip(".").rsplit(".", 1)[-1]
+        canonical = (
+            not bracketed
+            and HOSTNAME.fullmatch(host)
+            and not NUMERIC_LABEL.fullmatch(last)
+        )
+    if not canonical:
+        fail(f"bad host in {url}; use a hostname or a canonical IP address")
+    return host, port
 
 
 class Text(html.parser.HTMLParser):
@@ -125,68 +176,60 @@ class Text(html.parser.HTMLParser):
         return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
-def fetch_once(url, body_path, header_path, deadline):
-    """One request with no redirect following; the host is pinned to the
-    address public_address checked, so DNS can't change between check and use."""
-    if not URL_CHARS.fullmatch(url):
-        fail(f"bad URL: {url!r}")
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        fail(f"only http and https URLs are allowed: {url}")
-    if "@" in parts.netloc:
-        fail(f"URLs with credentials are not allowed: {url}")
-    try:
-        port = parts.port or (443 if parts.scheme == "https" else 80)
-    except ValueError:
-        fail(f"bad port in {url}")
-    ip = public_address(parts.hostname, port)
+def fetch_once(url, work, deadline):
+    """One request with no redirect following. --connect-to sends every
+    connection to the address public_address checked, so neither DNS changes
+    nor curl parsing the URL differently can reach another host."""
+    host, port = split_url(url)
+    ip = public_address(host, port)
     pin = f"[{ip}]" if ip.version == 6 else str(ip)
-    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
-    remaining = int(deadline - time.monotonic())
-    if remaining <= 0:
-        fail("timed out")
-    proc = subprocess.Popen(
-        [
-            "curl",
-            "-q",  # first, so no ~/.curlrc adds options
-            "-sS",
-            "--compressed",
-            "--proto",
-            "=http,https",
-            "--proto-redir",
-            "=http,https",
-            "--noproxy",
-            "*",
-            "--resolve",
-            f"{host}:{port}:{pin}",
-            "--max-time",
-            str(remaining),
-            "--max-filesize",
-            str(RAW_CAP),
-            "-A",
-            CHROME,
-            "-H",
-            f"Accept: {ACCEPT}",
-            "-H",
-            "Accept-Language: en-US,en;q=0.9",
-            "-D",
-            header_path,
-            "-o",
-            "-",
-            "--",
-            url,
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    body = proc.stdout.read(RAW_CAP + 1)
-    if len(body) > RAW_CAP:
-        proc.kill()
-        fail(f"response is larger than {RAW_CAP // (1024 * 1024)} MB: {url}")
-    _, err = proc.communicate()
-    if proc.returncode:
-        fail(f"curl failed for {url}: {err.decode(errors='replace').strip()}")
-    write_new(body_path, body)
+    body_path, header_path = (os.path.join(work, n) for n in ("body", "headers"))
+    argv = [
+        "curl",
+        "-q",  # first, so no ~/.curlrc adds options
+        "-sS",
+        "-g",
+        "--compressed",
+        "--proto",
+        "=http,https",
+        "--proto-redir",
+        "=http,https",
+        "--noproxy",
+        "*",
+        "--connect-to",
+        f"::{pin}:{port}",
+        "--max-time",
+        str(max(1, math.ceil(deadline - time.monotonic()))),
+        "--max-filesize",
+        str(RAW_CAP),
+        "-H",
+        f"Accept: {ACCEPT}",
+        "-D",
+        header_path,
+        "--",
+        url,
+    ]
+    with (
+        open(body_path, "wb") as out,
+        open(os.path.join(work, "stderr"), "w+b") as err,
+    ):
+        proc = subprocess.Popen(argv, stdout=out, stderr=err)
+        try:
+            while proc.poll() is None:
+                if time.monotonic() > deadline:
+                    fail(f"timed out (limit {TIMEOUT} s for all redirects): {url}")
+                if os.fstat(out.fileno()).st_size > RAW_CAP:
+                    fail(f"response is larger than {RAW_CAP // 2**20} MB: {url}")
+                time.sleep(0.05)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        if proc.returncode:
+            err.seek(0)
+            fail(
+                f"curl failed for {url}: {err.read().decode(errors='replace').strip()}"
+            )
     with open(header_path, "rb") as f:
         blocks = re.split(rb"\r?\n\r?\n", f.read().strip())
     lines = blocks[-1].decode("latin-1").splitlines()
@@ -198,19 +241,22 @@ def fetch_once(url, body_path, header_path, deadline):
 
 
 def download(url):
-    """Follow up to MAX_REDIRECTS redirects, checking each hop's scheme and
-    address, and return the final URL, status, headers, and body."""
+    """Follow up to MAX_REDIRECTS redirects, checking each hop's URL and
+    address, within one TIMEOUT; return the final URL, status, headers, body."""
     deadline = time.monotonic() + TIMEOUT
     work = tempfile.mkdtemp(prefix="research-get-")
     try:
-        body_path = os.path.join(work, "body")
-        header_path = os.path.join(work, "headers")
         for _ in range(MAX_REDIRECTS + 1):
-            status, headers = fetch_once(url, body_path, header_path, deadline)
+            status, headers = fetch_once(url, work, deadline)
             if not (300 <= status < 400 and headers.get("location")):
-                with open(body_path, "rb") as f:
+                with open(os.path.join(work, "body"), "rb") as f:
                     return url, status, headers, f.read()
-            url = urllib.parse.urljoin(url, headers["location"])
+            try:
+                target = urllib.parse.urljoin(url, headers["location"])
+            except ValueError:
+                fail(f"bad redirect from {url}: {headers['location']!r}")
+            # Spaces and non-ASCII become %XX; split_url then checks the result.
+            url = urllib.parse.quote(target, safe="!#$%&'()*+,-./:;=?@[]~_")
         fail(f"more than {MAX_REDIRECTS} redirects")
     finally:
         shutil.rmtree(work)
@@ -252,7 +298,7 @@ def get(url, *rest):
     print(url, status)
     kind, _, params = headers.get("content-type", "").partition(";")
     kind = kind.strip().lower()
-    if kind == "application/pdf" or (not kind and body.startswith(b"%PDF")):
+    if kind == "application/pdf" or body.startswith(b"%PDF"):
         if not directory:
             fail("this is a PDF; pass a scratch DIR to save it as DIR/page.pdf")
         pdf = os.path.join(directory, "page.pdf")

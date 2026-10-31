@@ -6,12 +6,17 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import shutil
+import socket
+import socketserver
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
+import time
+import types
 import unittest
 from email.message import EmailMessage
 from pathlib import Path
@@ -161,6 +166,43 @@ class ResearcherBashGateTests(unittest.TestCase):
         ]:
             with self.subTest(command=command):
                 self.assertBlocked(command)
+
+    def test_allowed_get_commands_run_with_the_argv_the_gate_saw(self):
+        """Run every allowed command in bash and zsh against a wrapper that
+        records its argv; the shell must hand it exactly what shlex parsed."""
+        dump = self.home / "argv.json"
+        canary = self.home / "pwned"
+        self.wrapper.write_text(
+            "#!/bin/sh\nexec python3 -I -c 'import json,sys;"
+            f'open("{dump}","w").write(json.dumps(sys.argv[1:]))\' "$@"\n'
+        )
+        self.wrapper.chmod(0o755)
+        commands = [
+            f"{TILDE} get 'http://a/?x=1&y=$(touch pwned)`touch pwned`'",
+            f"{TILDE} get 'http://a/'\"'\"';touch pwned;'",
+            f"{TILDE} get 'http://a/\\' ;touch pwned",
+            f"{TILDE} get 'http://a/!!' 5",
+            f"{TILDE} get 'http://a/' '$(touch pwned)'",
+            f"{TILDE} get 'http://a/'\n",
+            f"{TILDE} get 'http://{{x,localhost}}/[1-9]*?~#%' 5",
+            f"{TILDE} get 'http://a/' =x",
+        ]
+        shells = [s for s in ("/bin/bash", "/bin/zsh") if os.path.exists(s)]
+        for command in commands:
+            allowed = self.bash(command).returncode == 0
+            for shell in shells if allowed else []:
+                with self.subTest(command=command, shell=shell):
+                    dump.unlink(missing_ok=True)
+                    subprocess.run(
+                        [shell, "-c", command],
+                        env={"HOME": str(self.home), "PATH": "/usr/bin:/bin"},
+                        cwd=self.home,
+                        capture_output=True,
+                        check=False,
+                    )
+                    expected = shlex.split(command.replace("~", str(self.home), 1))
+                    self.assertEqual(json.loads(dump.read_text()), expected[1:])
+            self.assertFalse(canary.exists(), command)
 
     def test_block_message_says_what_is_allowed(self):
         stderr = self.assertBlocked("cat ~/.config/gh/hosts.yml")
@@ -601,8 +643,32 @@ PAGES = {
     "/json": (200, "application/json", b'{"a": 1}'),
     "/png": (200, "image/png", b"\x89PNG\r\n\x1a\n"),
     "/pdf": (200, "application/pdf", b"%PDF-1.4 fake"),
+    "/octet-pdf": (200, "application/octet-stream", b"%PDF-1.4 octet"),
+    "/a%20b%C3%A9": (200, "text/plain", b"spaced"),
+    "/slow-page": (200, "text/plain", b"slow"),
     "/missing": (404, "text/html", b"<p>gone</p>"),
 }
+# Hosts that reach this loopback server only if curl parses them differently
+# from the wrapper, or resolves them itself instead of using the pin.
+BYPASS_HOSTS = [
+    "0177.0.0.1",
+    "0177.1",
+    "012.0.0.1",
+    "0144.0145.0146.0147",
+    "0x7f.1",
+    "2130706433",
+    "%6cocalhost",
+    "loc%61lhost",
+    "{x,localhost}",
+    "localhos[s-t]",
+    "x,localhost",
+    "[::127.0.0.1]",
+    "[::ffff:0:7f00:1]",
+    "[::ffff:127.0.0.1]",
+    "[fec0::1]",
+    "[0:0::1]",
+    "[::1%25lo0]",
+]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -612,17 +678,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         redirects = {
             "/to-page?a=1&b=2": f"http://127.0.0.1:{port}/page",
             "/relative": "page",
+            "/to-space": "/a bé",
             "/to-private": "http://169.254.169.254/latest/meta-data/",
             "/to-localhost": f"http://localhost:{port}/page",
             "/to-file": "file:///etc/passwd",
+            "/to-glob": f"http://{{x.example/,127.0.0.1:{port}/page}}",
             "/loop": "/loop",
+            "/slow-hop-1": "/slow-hop-2",
+            "/slow-hop-2": "/page",
         }
+        for i, host in enumerate(BYPASS_HOSTS):
+            redirects[f"/to-bypass-{i}"] = f"http://{host}:{port}/page"
+        if self.path.startswith("/slow"):
+            time.sleep(1.5)
         if self.path in redirects:
             self.send_response(302)
             self.send_header("Location", redirects[self.path])
             self.end_headers()
             return
-        status, kind, body = PAGES[self.path]
+        status, kind, body = PAGES.get(self.path, (404, "text/plain", b"no"))
         self.send_response(status)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
@@ -633,26 +707,60 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind does a reverse DNS lookup that can stall.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "localhost", self.server_address[1]
+
+
+class V6Server(Server):
+    address_family = socket.AF_INET6
+
+
+def serve(server_class, address):
+    server = server_class(address, Handler)
+    server.requests = []
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 @unittest.skipIf(os.name == "nt", "needs a POSIX shell environment")
 @unittest.skipUnless(shutil.which("curl"), "needs curl")
 class ResearchGetTests(unittest.TestCase):
     """`get` against a local server with the real curl. The server is on
     loopback, which `get` refuses, so most tests load the wrapper in-process and
-    let only 127.0.0.1 through; the refusal test runs it unpatched."""
+    let only 127.0.0.1 through; the refusal tests run it unpatched."""
 
     def setUp(self):
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.server.requests = []
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.server = serve(Server, ("127.0.0.1", 0))
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
-        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.port = self.server.server_address[1]
+        self.base = f"http://127.0.0.1:{self.port}"
         spec = importlib.util.spec_from_file_location("research_fetch", FETCH)
         self.mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.mod)
-        real = self.mod.public_address
-        self.mod.public_address = lambda host, port: (
-            ipaddress.ip_address(host) if host == "127.0.0.1" else real(host, port)
+        self.real_public_address = self.mod.public_address
+        self.mod.public_address = self.loopback_only
+
+    def loopback_only(self, host, port):
+        if host == "127.0.0.1":
+            return ipaddress.ip_address(host)
+        return self.real_public_address(host, port)
+
+    def attacker_dns(self):
+        """Every name resolves to a public address, as an attacker's wildcard
+        zone would, so only the wrapper's own checks stand in the way."""
+        real = socket.getaddrinfo
+
+        def fake(host, *args, **kwargs):
+            if host == "127.0.0.1":
+                return real(host, *args, **kwargs)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 0))]
+
+        self.mod.socket = types.SimpleNamespace(
+            getaddrinfo=fake, IPPROTO_TCP=socket.IPPROTO_TCP
         )
 
     def get(self, *args):
@@ -674,11 +782,20 @@ class ResearchGetTests(unittest.TestCase):
         self.assertIn("Hello & bye", out)
         for dropped in ("secret", "p{}", "Menu"):
             self.assertNotIn(dropped, out)
-        self.assertIn("Chrome/", self.server.requests[0][1])
+
+    def test_sends_curls_own_user_agent(self):
+        self.get(self.base + "/page")
+        self.assertRegex(self.server.requests[0][1], r"^curl/")
 
     def test_relative_redirects_and_text_types(self):
         self.assertIn(f"{self.base}/page 200", self.get(self.base + "/relative")[1])
         self.assertIn('{"a": 1}', self.get(self.base + "/json")[1])
+
+    def test_redirect_location_with_space_and_non_ascii_is_encoded(self):
+        code, out, _ = self.get(self.base + "/to-space")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.splitlines()[0], f"{self.base}/a%20b%C3%A9 200")
+        self.assertIn("spaced", out)
 
     def test_caps_output_at_max_kb(self):
         code, out, _ = self.get(self.base + "/big", "2")
@@ -691,23 +808,80 @@ class ResearchGetTests(unittest.TestCase):
     def test_refuses_binary_and_saves_pdf_only_to_a_scratch_dir(self):
         self.assertIn("binary content type image/png", self.get(self.base + "/png")[2])
         self.assertIn("pass a scratch DIR", self.get(self.base + "/pdf")[2])
+        self.assertIn("pass a scratch DIR", self.get(self.base + "/octet-pdf")[2])
         base = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, base)
         scratch = base / "researcher-abcd1234"
         scratch.mkdir(mode=0o700)
         saved, tempfile.tempdir = tempfile.tempdir, str(base)
         try:
-            code, _, _ = self.get(self.base + "/pdf", str(scratch))
+            for path, body in [
+                ("/pdf", b"%PDF-1.4 fake"),
+                ("/octet-pdf", b"%PDF-1.4 octet"),
+            ]:
+                with self.subTest(path=path):
+                    code, _, _ = self.get(self.base + path, str(scratch))
+                    self.assertEqual(code, 0)
+                    self.assertEqual((scratch / "page.pdf").read_bytes(), body)
         finally:
             tempfile.tempdir = saved
-        self.assertEqual(code, 0)
-        self.assertEqual((scratch / "page.pdf").read_bytes(), b"%PDF-1.4 fake")
 
     def test_error_status_prints_the_page_and_exits_nonzero(self):
         code, out, _ = self.get(self.base + "/missing")
         self.assertEqual(code, 1)
         self.assertIn("/missing 404", out)
         self.assertIn("gone", out)
+
+    def test_curl_connects_only_to_the_checked_address(self):
+        """The name doesn't resolve, so a response proves curl used the pin."""
+        self.mod.public_address = lambda host, port: ipaddress.ip_address("127.0.0.1")
+        code, out, _ = self.get(f"http://pinned.invalid:{self.port}/page")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Hello & bye", out)
+
+    def test_bracketed_ipv6_literal_fetches(self):
+        try:
+            server = serve(V6Server, ("::1", 0))
+        except OSError as e:
+            self.skipTest(f"no IPv6 loopback: {e}")
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.mod.public_address = lambda host, port: ipaddress.ip_address(host)
+        url = f"http://[::1]:{server.server_address[1]}/page"
+        code, out, _ = self.get(url)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.splitlines()[0], f"{url} 200")
+
+    def test_curl_globs_are_literal(self):
+        self.get(self.base + "/[1-4]{a,b}")
+        self.assertEqual([p for p, _ in self.server.requests], ["/[1-4]{a,b}"])
+
+    def test_one_deadline_covers_every_hop(self):
+        self.mod.TIMEOUT = 2
+        self.assertEqual(self.get(self.base + "/slow-page")[0], 0)
+        # Each slow hop fits the budget alone; together they don't.
+        start = time.monotonic()
+        code, out, message = self.get(self.base + "/slow-hop-1")
+        self.assertNotEqual(code, 0)
+        self.assertIn("timed out", message)
+        self.assertEqual(out, "")
+        self.assertLess(time.monotonic() - start, 2.8)
+
+    def test_closed_port_with_a_large_glob_does_not_hang(self):
+        """A glob once made curl fill its stderr pipe while the wrapper waited
+        on stdout; the wrapper must return within its deadline."""
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            closed = s.getsockname()[1]
+        self.mod.TIMEOUT = 5
+        done = threading.Event()
+
+        def run():
+            self.get(f"http://127.0.0.1:{closed}/[1-20000]")
+            done.set()
+
+        threading.Thread(target=run, daemon=True).start()
+        self.assertTrue(done.wait(15), "get hung")
 
     def test_refuses_redirects_to_private_addresses_and_other_schemes(self):
         for path, reason in [
@@ -721,38 +895,83 @@ class ResearchGetTests(unittest.TestCase):
                 self.assertNotEqual(code, 0)
                 self.assertIn(reason, message)
                 self.assertEqual(out, "")
+        self.attacker_dns()
+        paths = ["/to-glob"] + [f"/to-bypass-{i}" for i in range(len(BYPASS_HOSTS))]
+        for path in paths:
+            with self.subTest(path=path):
+                code, out, _ = self.get(self.base + path)
+                self.assertNotEqual(code, 0)
+                self.assertEqual(out, "")
         self.assertNotIn("/page", [p for p, _ in self.server.requests])
 
+    def test_refuses_hosts_curl_would_read_differently(self):
+        self.attacker_dns()
+        for host in BYPASS_HOSTS:
+            with self.subTest(host=host):
+                code, out, _ = self.get(f"http://{host}:{self.port}/page")
+                self.assertNotEqual(code, 0)
+                self.assertEqual(out, "")
+        self.assertEqual(self.server.requests, [])
+
+    def test_refuses_ipv6_forms_that_embed_ipv4_and_site_local(self):
+        for host in [
+            "::127.0.0.1",
+            "::8.8.8.8",
+            "::ffff:0:7f00:1",
+            "::ffff:0:808:808",
+            "::ffff:127.0.0.1",
+            "fec0::1",
+            "64:ff9b::7f00:1",
+        ]:
+            with self.subTest(host=host), self.assertRaises(SystemExit):
+                self.real_public_address(host, 80)
+        self.assertEqual(
+            str(self.real_public_address("2606:4700::1", 443)), "2606:4700::1"
+        )
+
     def test_unpatched_wrapper_refuses_private_addresses_and_schemes(self):
-        port = self.server.server_address[1]
-        for url in [
-            self.base + "/page",
-            f"http://localhost:{port}/page",
-            f"http://[::1]:{port}/page",
-            f"http://2130706433:{port}/page",
+        try:
+            v6 = serve(V6Server, ("::", self.port))
+            self.addCleanup(v6.server_close)
+            self.addCleanup(v6.shutdown)
+        except OSError:
+            v6 = None
+        hosts = [
+            "127.0.0.1",
+            "localhost",
+            "LOCALHOST",
+            "localhost.",
+            "[::1]",
+            *BYPASS_HOSTS,
+        ]
+        urls = [f"http://{host}:{self.port}/page" for host in hosts]
+        urls += [
             "http://10.0.0.1/",
             "http://192.168.1.1/",
             "http://169.254.169.254/latest/meta-data/",
             "http://100.100.100.200/",
             "http://[fd00:ec2::254]/",
-            "http://[::ffff:127.0.0.1]/",
             "http://[64:ff9b::7f00:1]/",
             "file:///etc/passwd",
             "ftp://example.com/",
             "gopher://example.com/",
             "http://user@example.com/",
             "http://example.com\\@127.0.0.1/",
-        ]:
+        ]
+        for url in urls:
             with self.subTest(url=url):
                 result = subprocess.run(
                     [sys.executable, "-I", str(FETCH), "get", url],
                     capture_output=True,
                     check=False,
                     text=True,
+                    timeout=60,
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, "")
         self.assertEqual(self.server.requests, [])
+        if v6:
+            self.assertEqual(v6.requests, [])
 
 
 if __name__ == "__main__":
