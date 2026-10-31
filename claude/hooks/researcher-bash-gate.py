@@ -8,8 +8,12 @@ A command may use only letters, digits, spaces, quotes, and _-./:=,+@%. That
 leaves no way to chain, pipe, redirect, substitute, glob, or expand, so the
 argv shlex sees is the argv the shell runs. No fetch-media recipe needs more:
 the wrapper takes video ids and KEY=VALUE pairs instead of URLs with ? and &.
-The single exception is the literal leading `~/.claude/hooks/research-fetch.py`,
-whose tilde expands to this hook's own idea of home.
+Two exceptions: the literal leading `~/.claude/hooks/research-fetch.py`, whose
+tilde expands to this hook's own idea of home, and the URL of `get`, which may
+hold ? & = # and printable non-ASCII when it is one single-quoted word.
+Nothing expands inside single quotes, and the URL may not contain a quote,
+space, control, or format character (no bidi overrides or zero-width
+characters), so the word cannot end early or display as something else.
 """
 
 import json
@@ -29,6 +33,8 @@ time, with no shell syntax (no ; & | $ ` ( ) < > * ? ~ \\ or newlines):
   ~/.claude/hooks/research-fetch.py storyboard VIDEO_ID DIR
   ~/.claude/hooks/research-fetch.py slice VIDEO_ID START END DIR [FRAME]
   ~/.claude/hooks/research-fetch.py reddit /r/SUB/PATH [KEY=VALUE ...]
+  ~/.claude/hooks/research-fetch.py get 'URL' [MAX_KB] [DIR]   (single-quote the URL)
+  ~/.claude/hooks/research-fetch.py help
 Use Read, Grep, Glob, WebFetch, and WebSearch for everything else."""
 
 
@@ -42,6 +48,11 @@ def check(command):
     tilde = "~/.claude/hooks/research-fetch.py"
     if command == tilde or command.startswith(tilde + " "):
         command = WRAPPER + command[len(tilde) :]
+    url = re.match(re.escape(WRAPPER) + r" get ('[^'\s]+')( |$)", command)
+    if url and all(
+        "!" <= c <= "~" or (c > "\x7f" and c.isprintable()) for c in url.group(1)[1:-1]
+    ):
+        command = command[: url.start(1)] + "URL" + command[url.end(1) :]
     bad = sorted(set(SAFE.sub("", command)))
     if bad:
         return "shell syntax not allowed: " + " ".join(repr(c) for c in bad)
