@@ -716,6 +716,10 @@ PAGES = {
     "/js": (200, "application/javascript", b"var d = 4"),
     "/x-js": (200, "application/x-javascript", b"var e = 5"),
     "/big-html": (200, "text/html", b"<p>" + b"y" * 10000 + b"</p>"),
+    "/punycode": (200, "text/plain; charset=punycode", b"-" + b"a" * 4_000_000),
+    "/idna": (200, "text/plain; charset=idna", b"fallback " + b"a" * 70),
+    "/undefined": (200, "text/plain; charset=undefined", b"fallback text"),
+    "/latin-1": (200, "text/plain; charset=ISO-8859-1", b"caf\xe9"),
     "/missing": (404, "text/html", b"<p>gone</p>"),
 }
 # A synthetic global prefix that tests inject as one of this machine's networks.
@@ -1204,6 +1208,20 @@ class ResearchGetTests(unittest.TestCase):
         self.assertEqual(
             out.splitlines()[0], f"http://xn--bcher-kva.example:{self.port}/page 200"
         )
+
+    def test_decodes_only_allowlisted_charsets(self):
+        for path, text in [
+            ("/punycode", "-aaaa"),
+            ("/idna", "fallback aaaa"),
+            ("/undefined", "fallback text"),
+            ("/latin-1", "caf\u00e9"),
+        ]:
+            with self.subTest(path=path):
+                start = time.monotonic()
+                code, out, message = self.get(self.base + path, "1")
+                self.assertEqual(code, 0, message)
+                self.assertIn(text, out)
+                self.assertLess(time.monotonic() - start, 5)
 
     def test_more_text_types(self):
         for path, text in [

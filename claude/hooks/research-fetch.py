@@ -26,6 +26,7 @@ final URL and HTTP status first, then at most MAX_KB (default 200) of text; it
 saves a PDF to DIR/page.pdf only when DIR is given. Single-quote the URL.
 """
 
+import codecs
 import email
 import html.parser
 import ipaddress
@@ -86,6 +87,18 @@ TIMEOUT = 30
 RAW_CAP = 20 * 1024 * 1024
 PARSE_CAP = 5 * 1024 * 1024
 PARSE_CHUNK = 64 * 1024
+# Charsets a page may name. Others, such as punycode (quadratic) or idna,
+# can hang or crash on a crafted body, so they fall back to utf-8.
+CHARSETS = {
+    codecs.lookup(name).name
+    for name in [
+        "utf-8", "utf-8-sig", "us-ascii", "latin-1", "cp1252", "utf-16",
+        "utf-16le", "utf-16be", "shift_jis", "euc-jp", "gb18030", "gbk",
+        "big5", "euc-kr", "koi8-r",
+        *(f"iso-8859-{n}" for n in range(2, 16) if n != 12),
+        *(f"cp{n}" for n in range(1250, 1259)),
+    ]
+}  # fmt: skip
 STALE_GET = re.compile(r"research-get-[a-z0-9_]{8}")
 TEXT_TYPES = re.compile(
     r"text/.*|application/(json|xml|javascript|x-javascript|yaml|x-yaml|toml"
@@ -107,7 +120,8 @@ def parse_interfaces(text):
     networks = []
     for m in INTERFACE.finditer(text):
         address, slash, mask, prefixlen = m.groups()
-        bits = slash or prefixlen or int(mask, 16).bit_count()
+        # Not int.bit_count(), which needs Python 3.10.
+        bits = slash or prefixlen or bin(int(mask, 16)).count("1")  # noqa: FURB161
         networks.append(ipaddress.ip_interface(f"{address}/{bits}").network)
     return networks
 
@@ -355,8 +369,12 @@ def download(url, deadline):
 def show_text(body, kind, params, max_kb, deadline):
     charset = re.search(r"charset=\"?([\w.:-]+)", params)
     try:
-        text = body.decode(charset.group(1) if charset else "utf-8", "replace")
+        name = codecs.lookup(charset.group(1) if charset else "utf-8").name
     except LookupError:
+        name = "utf-8"
+    try:
+        text = body.decode(name if name in CHARSETS else "utf-8", "replace")
+    except UnicodeError:
         text = body.decode("utf-8", "replace")
     if not kind and "\x00" in text:
         fail("refusing binary content with no content type")
