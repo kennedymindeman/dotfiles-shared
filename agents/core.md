@@ -1,5 +1,6 @@
 # Code style
 Prefer minimal solutions: YAGNI, stdlib first, shortest working diff. No unrequested abstractions or scaffolding "for later".
+Write scripts, wizards included, in Python as uv single-file scripts: `#!/usr/bin/env -S uv run --script` with an inline `# /// script` block that pins `requires-python` and dependencies. Don't write bash scripts; one-line shell commands are fine. Where uv isn't installed, use stdlib-only Python.
 
 # Shell quoting
 Write multi-line text (scripts, issue/PR bodies, commit messages, plists) to a file with the Write tool, then pass the file in (`sh file`, `gh … --body-file`, `git commit -F`). Don't build that text inline with `printf`, `echo`, or a heredoc inside a Bash call.
