@@ -4,9 +4,11 @@
 
 Reads ~/.claude/projects/**/*.jsonl, keeps Bash calls from the last --days, and
 runs each through the hook with PR_MERGE_GATE_PROTECTED_BASES set to
---protected. `gh pr merge` calls query GitHub read-only for the PR's current
-state, so verdicts reflect today's PRs, not the day of the call. Prints how
-many calls it would block, the top reasons, and hook latency.
+--protected. Lookups query GitHub read-only for each PR's current state, so
+verdicts reflect today's PRs, not the day of the call. Prints how many calls it
+would block, the top reasons, and hook latency. For real `gh pr merge` calls
+refused only for their form, it also looks up where they merged, to show how
+many merges into unprotected bases the canonical form would now refuse.
 """
 
 import argparse
@@ -14,6 +16,7 @@ import collections
 import datetime
 import json
 import os
+import re
 import statistics
 import subprocess
 import time
@@ -46,6 +49,35 @@ def calls(since):
                     yield block.get("input", {}), entry.get("cwd", "")
 
 
+MERGE = re.compile(r"gh\s+pr\s+merge\b([^;&|\n]*)")
+
+
+def merge_base(match, cwd):
+    """Where a real merge pointed, judged from today's PR state."""
+    args = match.group(1)
+    number = re.search(r"(?:^|\s)(\d+)\b", args) or re.search(r"/pull/(\d+)", args)
+    repo = re.search(r"(?:-R|--repo)[\s=]*([\w.-]+/[\w.-]+)", args)
+    if not number:
+        return "base unresolved"
+    if repo:
+        repo = repo.group(1)
+    else:
+        origin = subprocess.run(
+            ["git", "-C", cwd or ".", "remote", "get-url", "origin"],
+            capture_output=True, check=False, text=True,
+        ).stdout.strip()
+        found = re.search(r"([\w.-]+/[\w.-]+?)(?:\.git)?$", origin)
+        if not found:
+            return "base unresolved"
+        repo = found.group(1)
+    base = subprocess.run(
+        ["gh", "pr", "view", number.group(1), "-R", repo, "--json", "baseRefName",
+         "-q", ".baseRefName"],
+        capture_output=True, check=False, text=True,
+    ).stdout.strip()
+    return f"into {base}" if base else "base unresolved"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=7)
@@ -70,16 +102,22 @@ def main():
             check=False,
             text=True,
         )
-        kind = "merge" if "gh pr merge" in tool_input.get("command", "") else "other"
-        timings[kind].append((time.perf_counter() - start) * 1000)
+        command = tool_input.get("command", "")
+        merge = MERGE.search(command) if isinstance(command, str) else None
+        timings["merge" if merge else "other"].append(
+            (time.perf_counter() - start) * 1000
+        )
         if result.returncode == 2:
             first = result.stderr.splitlines()[0] if result.stderr else ""
-            if "can't tell which branch" in first:
-                why = first.split(" merges into (", 1)[-1].split(":")[0].split(")")[0]
-                reasons["base unknown: " + why] += 1
+            if "one merge form the gate checks" in first:
+                if merge:
+                    reasons["form: gh pr merge, " + merge_base(merge, cwd)] += 1
+                else:
+                    reasons["form: mentions gh and merge, not a merge"] += 1
+            elif "couldn't read the base branch" in first:
+                reasons["base lookup failed"] += 1
             elif "protected base" in first:
-                base = first.split(" merges into ", 1)[1].split(",")[0]
-                reasons["protected base: " + base] += 1
+                reasons["protected base: " + first.split(" merges into ")[1].split(",")[0]] += 1
             else:
                 reasons["unresolved review threads"] += 1
     print(f"{total} Bash calls in the last {args.days} days")
