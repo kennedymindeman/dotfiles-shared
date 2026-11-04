@@ -74,8 +74,12 @@ def main():
         timings[kind].append((time.perf_counter() - start) * 1000)
         if result.returncode == 2:
             first = result.stderr.splitlines()[0] if result.stderr else ""
-            if "protected base" in first:
-                reasons["protected base: " + first.split(" merges into ")[1]] += 1
+            if "can't tell which branch" in first:
+                why = first.split(" merges into (", 1)[-1].split(":")[0].split(")")[0]
+                reasons["base unknown: " + why] += 1
+            elif "protected base" in first:
+                base = first.split(" merges into ", 1)[1].split(",")[0]
+                reasons["protected base: " + base] += 1
             else:
                 reasons["unresolved review threads"] += 1
     print(f"{total} Bash calls in the last {args.days} days")
