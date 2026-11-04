@@ -306,6 +306,26 @@ class LinkTests(unittest.TestCase):
         self.assertNotIn("research", settings["subagents"]["agents"])
         self.assertEqual((self.home / ".dotfiles-env").read_text(), "work\n")
 
+    def test_claude_only_overlay_rules_reach_only_claude(self):
+        self.write(self.overlay / "agents/home.claude.md", "Claude mechanics.\n")
+        self.apply("home", self.overlay)
+        claude = (self.home / ".claude/CLAUDE.md").read_text()
+        self.assertIn("Personal automation", claude)
+        self.assertIn("Claude mechanics", claude)
+        for relative in (
+            "AGENTS.md",
+            ".codex/AGENTS.md",
+            ".copilot/copilot-instructions.md",
+        ):
+            with self.subTest(relative=relative):
+                text = (self.home / relative).read_text()
+                self.assertIn("Personal automation", text)
+                self.assertNotIn("Claude mechanics", text)
+        self.apply("work")
+        claude = (self.home / ".claude/CLAUDE.md").read_text()
+        self.assertNotIn("Claude mechanics", claude)
+        self.assertIn("Use focused changes", claude)
+
     def test_modified_private_copy_blocks_transition(self):
         self.apply("home", self.overlay)
         target = self.home / ".config/private.txt"

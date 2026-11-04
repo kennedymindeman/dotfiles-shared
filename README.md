@@ -120,13 +120,15 @@ and restricts sensitive paths. Outbound internet remains allowed.
 The shared agents are small single-job agents. The `builder` and `researcher`
 agents preload skills from [kennedymindeman/skills](https://github.com/kennedymindeman/skills),
 and `researcher` also preloads `research` from [mattpocock/skills](https://github.com/mattpocock/skills).
+The shared rules in `agents/core.md` point to `review-evidence` from the same repo.
 Install those skills for each agent harness you use:
 
 ```sh
-npx skills add kennedymindeman/skills -g -a claude-code -s builder-rules researcher-rules fetch-media -y
+npx skills add kennedymindeman/skills -g -a claude-code -s builder-rules researcher-rules fetch-media review-evidence -y
 npx skills add mattpocock/skills -g -a claude-code -s research -y
-npx skills add kennedymindeman/skills -g -a github-copilot -s builder-rules researcher-rules fetch-media -y
+npx skills add kennedymindeman/skills -g -a github-copilot -s builder-rules researcher-rules fetch-media review-evidence -y
 npx skills add mattpocock/skills -g -a github-copilot -s research -y
+npx skills add kennedymindeman/skills -g -a codex -s review-evidence -y
 ```
 
 Claude agents use `model: opus`, which follows the newest Opus your provider
@@ -200,6 +202,7 @@ These optional files load after the shared configuration; `<profile>` is exactly
 | --- | --- |
 | `gitconfig.<profile>` | Git include after shared preferences; identity or environment-specific includes |
 | `agents/<profile>.md` | Appended to generated agent instructions; shared work rules remain present |
+| `agents/<profile>.claude.md` | Appended to `~/.claude/CLAUDE.md` only, after `agents/<profile>.md`, for Claude Code-only rules |
 | `zshrc.<profile>`, `bashrc.<profile>` | Sourced after the corresponding shared shell setup on Unix |
 | `tmux.<profile>.conf` | Sourced after shared tmux on Unix |
 | `powershell/profile.<profile>.ps1` | Sourced after shared PowerShell setup on Windows |

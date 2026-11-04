@@ -410,6 +410,12 @@ def configured_files(repo, platform, profile="shared"):
     return result
 
 
+def overlay_rules(overlay, name):
+    """Return an optional overlay rules file, prefixed with a blank line."""
+    path = overlay / "agents" / name if overlay else None
+    return "\n" + path.read_text() if path and path.is_file() else ""
+
+
 def check_home_integrations(installer, powershell_profile=None):
     """Review external registrations when leaving home or changing overlays."""
     leaving_home = installer.profile == "work" and installer.old.get("profile") == "home"
@@ -520,10 +526,13 @@ def plan(
     rules = (repo / "agents/core.md").read_text()
     if profile == "work":
         rules += "\n" + (repo / "agents/work.md").read_text()
-    if overlay and (overlay / f"agents/{profile}.md").is_file():
-        rules += "\n" + (overlay / f"agents/{profile}.md").read_text()
-    for relative in ("AGENTS.md", ".codex/AGENTS.md", ".claude/CLAUDE.md"):
+    rules += overlay_rules(overlay, f"{profile}.md")
+    for relative in ("AGENTS.md", ".codex/AGENTS.md"):
         installer.block(relative, rules, markdown=True)
+    # Claude-only mechanics (its tools, hooks, permission modes) stay out of
+    # the harness-neutral files above.
+    claude_rules = rules + overlay_rules(overlay, f"{profile}.claude.md")
+    installer.block(".claude/CLAUDE.md", claude_rules, markdown=True)
     installer.block(
         ".copilot/copilot-instructions.md",
         (repo / "copilot/copilot-instructions.md").read_text() + "\n" + rules,
