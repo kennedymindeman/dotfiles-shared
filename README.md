@@ -200,6 +200,7 @@ These optional files load after the shared configuration; `<profile>` is exactly
 | --- | --- |
 | `gitconfig.<profile>` | Git include after shared preferences; identity or environment-specific includes |
 | `agents/<profile>.md` | Appended to generated agent instructions; shared work rules remain present |
+| `agents/<profile>.claude.md` | Appended to `~/.claude/CLAUDE.md` only, after `agents/<profile>.md`, for Claude Code-only rules |
 | `zshrc.<profile>`, `bashrc.<profile>` | Sourced after the corresponding shared shell setup on Unix |
 | `tmux.<profile>.conf` | Sourced after shared tmux on Unix |
 | `powershell/profile.<profile>.ps1` | Sourced after shared PowerShell setup on Windows |
