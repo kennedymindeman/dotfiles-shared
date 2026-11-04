@@ -66,10 +66,32 @@ BYPASSES = {
     "git merge next to gh": "git merge origin/main && gh pr checks 8",
 }
 
+# Final red-team cases. Each runs through the hook and, if allowed, through
+# real bash with a logging fake gh; no merge may reach gh.
+RED_TEAM = {
+    "split gh with quotes": f"g''h pr merge 7 -R {REPO}",
+    "split merge with quotes": f'gh pr mer""ge 7 -R {REPO}',
+    "backslash in gh": f"g\\h pr merge 7 -R {REPO}",
+    "uppercase GH": f"GH pr merge 7 -R {REPO}",
+    "empty expansion in gh": f"g${{x}}h pr merge 7 -R {REPO}",
+    "second -R": f"gh pr merge 8 -R {REPO} -R example-org/other",
+    "second --repo=": f"gh pr merge 8 -R {REPO} --repo=example-org/other",
+    "attached second -R": f"gh pr merge 8 -R {REPO} -Rexample-org/other",
+    "auto merge": f"gh pr merge 8 -R {REPO} --auto",
+    "glob star": f"gh pr merge 8 -R {REPO} --subject *",
+    "glob question": f"gh pr merge 8 -R {REPO} --body ?",
+    "bracket glob": f"gh pr merge 8 -R {REPO} --body [ab]",
+    "tilde cd": f"cd ~ && gh pr merge 8 -R {REPO}",
+    "brace group": f"{{ gh pr merge 8 -R {REPO}; }}",
+    "history bang": f"gh pr merge 8 -R {REPO} --body !!",
+    "graphql merge mutation": "gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:\"PR_x\"}){clientMutationId}}'",
+    "graphql merge mutation, no braces": "gh api graphql -f query=@q -F mergePullRequest=1",
+}
+
 CANONICAL = [
     f"gh pr merge 8 -R {REPO}",
     f"gh pr merge 8 -R {REPO} --merge --delete-branch",
-    f"gh pr merge 8 -R {REPO} --squash --auto --subject 'Ship it, #12 now' --body \"a b\"",
+    f"gh pr merge 8 -R {REPO} --squash --subject 'Ship it, #12 now' --body \"a b\"",
     f"cd /tmp && gh pr merge 8 -R {REPO} --rebase",
     f"cd 'a dir' && gh pr merge 8 -R {REPO} --subject '#1 fix'",
     f"gh  pr\tmerge 8 -R {REPO}",
@@ -187,6 +209,29 @@ class PrMergeGateTests(unittest.TestCase):
                 result = self.run_hook(command, protected="main")
                 self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.gh_calls(), [])
+
+    def test_red_team_cases_never_merge(self):
+        # Every PR's base is main here, so any merge reaching gh is protected.
+        for name, command in RED_TEAM.items():
+            with self.subTest(name):
+                self.log.unlink(missing_ok=True)
+                result = self.run_hook(command, base="main", _8="dev", protected="main")
+                if result.returncode == 2:
+                    continue
+                subprocess.run(
+                    ["bash", "-c", command],
+                    cwd=self.dir,
+                    env={**os.environ, "PATH": f"{self.dir}{os.pathsep}{os.environ['PATH']}",
+                         "GH_STUB_LOG": str(self.log), "GH_STUB_URL": URL,
+                         "GH_STUB_BASE": "main"},
+                    capture_output=True,
+                    check=False,
+                )
+                merges = [
+                    c for c in (self.log.read_text() if self.log.exists() else "").splitlines()
+                    if "|pr merge" in c or ("|api" in c and "merge" in c.lower())
+                ]
+                self.assertEqual(merges, [], f"{command!r} reached gh as a merge")
 
     def test_threads_still_checked_after_an_allowed_merge(self):
         result = self.run_hook(

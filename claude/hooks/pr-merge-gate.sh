@@ -12,7 +12,10 @@
 set -uf  # -f: the merge command is word-split below and must not glob
 input=$(cat)
 if [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
-  case "$input" in *gh*) case "$input" in *merge*)
+  # Cheap pre-filter: strip quotes, backslashes and $ expansions, then look for
+  # both words in any case, so g''h, mer""ge, g\h and GH all reach Python.
+  bare=$(printf '%s' "$input" | sed -e 's/\${[^}]*}//g' -e 's/\$[A-Za-z0-9_]*//g' -e "s/[\"'\\\\\`]//g")
+  case "$bare" in *[gG][hH]*) case "$bare" in *[mM][eE][rR][gG][eE]*)
     command -v python3 >/dev/null 2>&1 || {
       echo "BLOCKED: python3 is missing, so pr-merge-gate can't check this command for a merge." >&2
       exit 2
@@ -27,8 +30,16 @@ import sys
 
 protected = os.environ["PR_MERGE_GATE_PROTECTED_BASES"].split()
 FORM = ("gh pr merge <number> -R <owner>/<repo> [--merge|--squash|--rebase] "
-        "[--delete-branch] [--auto] [--subject '<text>'] [--body '<text>']")
-SWITCHES = {"--merge", "--squash", "--rebase", "--delete-branch", "--auto"}
+        "[--delete-branch] [--subject '<text>'] [--body '<text>']")
+# No --auto: the PR's base can change after auto-merge is armed.
+SWITCHES = {"--merge", "--squash", "--rebase", "--delete-branch"}
+
+
+def possible_merge(text):
+    if not re.search(r"\bgh\b", text, re.I):
+        return False
+    return bool(re.search(r"\bmerge\b", text, re.I)
+                or (re.search(r"\bapi\b", text, re.I) and re.search("merge", text, re.I)))
 
 
 def refuse(text):
@@ -51,10 +62,11 @@ except (ValueError, KeyError, TypeError):
     sys.exit(0)  # not a shell command
 if not isinstance(cmd, str):
     noncanonical("the command is not a single string")
-if not (re.search(r"\bgh\b", cmd) and re.search(r"\bmerge\b", cmd)):
+bare = re.sub(r"\$\{[^}]*\}|\$\w+|[\"'\\`]", "", cmd)
+if not (possible_merge(cmd) or possible_merge(bare)):
     sys.exit(0)
-if re.search(r"[\n\r\\`$;|<>()]", cmd):
-    noncanonical("it has a newline, backslash, backtick, $, ;, |, <, >, or parenthesis")
+if re.search(r"[\n\r\\`$;|<>(){}*?\[\]~!]", cmd):
+    noncanonical("it has a newline, backslash, backtick, or one of $ ; | < > ( ) { } * ? [ ] ~ !")
 lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
 lexer.whitespace_split = True
 lexer.commenters = ""
@@ -73,6 +85,8 @@ if (words[:3] != ["gh", "pr", "merge"] or len(words) < 6
         or not re.fullmatch(r"[\w.-]+/[\w.-]+", words[5])):
     noncanonical("it must start with gh pr merge <number> -R <owner>/<repo>")
 num, repo, rest = words[3], words[5], words[6:]
+if any(w.startswith(("-R", "--repo")) for w in rest):
+    noncanonical("-R may appear only once, as -R <owner>/<repo> after the number")
 while rest:
     word = rest.pop(0)
     if word in SWITCHES:
