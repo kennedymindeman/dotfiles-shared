@@ -35,7 +35,7 @@ time, with no shell syntax (no ; & | $ ` ( ) < > * ? ~ \\ or newlines):
   ~/.claude/hooks/research-fetch.py reddit /r/SUB/PATH [KEY=VALUE ...]
   ~/.claude/hooks/research-fetch.py get 'URL' [MAX_KB] [DIR]   (single-quote the URL)
   ~/.claude/hooks/research-fetch.py help
-Use Read, Grep, Glob, WebFetch, and WebSearch for everything else."""
+Use Read, Grep, WebFetch, and WebSearch for everything else."""
 
 
 def block(reason):
