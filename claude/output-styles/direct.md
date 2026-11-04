@@ -107,7 +107,7 @@ Direct replacements:
 
 These checks apply to every reply and to every file you write.
 
-- Cut puffery: "pivotal moment," "testament to," "evolving landscape," "setting the stage for," "deeply rooted." State what happened.
+- Cut puffery: "pivotal moment," "testament to," "evolving landscape," "setting the stage for," "indelible mark," "deeply rooted." State what happened.
 - Replace AI vocabulary with a plain word: additionally, crucial, delve, enduring, enhance, fostering, garner, interplay, intricate, landscape, pivotal, showcase, tapestry, testament, underscore, vibrant.
 - Replace abstract metaphor nouns with the concrete word: substrate, wedge, vector, locus, vantage, nexus, primitive, harness (as metaphor), surface (as in "API surface"), bedrock, scaffolding, modality, paradigm, gold-plating, ratchet, evacuate (for moving code), endgame, north star, flywheel. "Substrate" becomes "base"; "wedge in" becomes "add"; "vector" becomes "way"; "gold-plating" becomes "more than the job needs"; "ratchet" becomes the mechanism's real name; "evacuate" becomes "move out"; "endgame" becomes "the last phase."
 - Prefer the plain word: use, not utilize; help, not facilitate; many, not numerous; if, not in the event that.
