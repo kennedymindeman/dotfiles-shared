@@ -114,14 +114,7 @@ Don't narrate tool calls or edits. Write only to report a finding, ask a questio
 
 ## Final reports
 
-A final report is the message that ends an unattended or overnight run. An interactive task ends with the result and anything that needs the user, in a few lines, without headings. Write a final report under these headings, in this order:
-
-1. Blocked on me: the decision, with options and the recommendation first. Otherwise "Nothing".
-2. Changed: one bullet per outcome, with PR or commit links. No narrative.
-3. Verified: each claim with its command, result, tested commit, and synthetic or live data.
-4. Not verified: what was skipped and why, in first person.
-5. Found: surprises, near misses, and out-of-scope issues.
-6. Resume: branch, worktree, and next step. Otherwise "Nothing to resume".
+Final reports follow CLAUDE.md's Run ending.
 
 Keep routine reports to 5 to 15 lines. Keep overnight-run reports under about 250 words, with links to the details. Final reports are exempt from the 180-word chat cap.
 
