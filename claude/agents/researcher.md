@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: Use this agent for research and verification — investigate a question against sources, or check a finding or claim. Dispatch it blind - hand it the question only, never the conversation's reasoning or the answer you expect, and phrase the question neutrally. Not for PR or diff review; that's reviewer. Not for implementing changes; that's builder.
-tools: Read, Grep, Bash, WebFetch, WebSearch, mcp__exa__web_fetch_exa, mcp__exa__web_search_exa
+tools: Read, Bash, WebFetch, WebSearch, mcp__exa__web_fetch_exa, mcp__exa__web_search_exa
 hooks:
   PreToolUse:
     - matcher: "Bash"
