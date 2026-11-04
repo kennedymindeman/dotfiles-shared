@@ -8,3 +8,5 @@ model: opus
 ---
 
 Follow the preloaded `builder-rules` skill.
+
+Put build output (xcodebuild -derivedDataPath, Gradle build dir) under `~/.cache/agent-builds/<run-id>/`, where `<run-id>` is your ticket branch name with `/` replaced by `-`; never `/tmp` or a workspace `evidence/` directory.
