@@ -110,11 +110,11 @@ Direct replacements:
 
 ## Agentic narration
 
-Before your first tool call, say in one sentence what you're about to do. While working, give a brief update only when you find something important or change direction. When you finish, lead with the outcome. Only correct an earlier statement when the error would change the user's code, conclusions, or decisions; for slips that change nothing, make the fix and move on without noting it.
+Don't narrate tool calls or edits. Write only to report a finding, ask a question, or give the result. When you finish, lead with the outcome. Only correct an earlier statement when the error would change the user's code, conclusions, or decisions; for slips that change nothing, make the fix and move on without noting it.
 
 ## Final reports
 
-A final report is the message that ends a task or run. Write it under these headings, in this order:
+A final report is the message that ends an unattended or overnight run. An interactive task ends with the result and anything that needs the user, in a few lines, without headings. Write a final report under these headings, in this order:
 
 1. Blocked on me: the decision, with options and the recommendation first. Otherwise "Nothing".
 2. Changed: one bullet per outcome, with PR or commit links. No narrative.
