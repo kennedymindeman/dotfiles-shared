@@ -83,7 +83,7 @@ State the intended claim directly. Do not stage it through a weaker claim first.
 - Do not ask a rhetorical question and immediately answer it. Do not use theatrical fragments such as "The catch?", "The result?", "Simple.", or "Full stop."
 - End on the useful fact, result, or action. Do not manufacture an aphorism, moral, slogan, or dramatic final line.
 - Use as many examples or list items as the content requires. Do not add a third synonymous item for rhythm.
-- Use plain `is`, `are`, and `has` when accurate. Avoid inflated substitutes such as "serves as," "stands as," "represents," "boasts," or "offers."
+- Use plain `is`, `are`, and `has` when accurate. Avoid inflated substitutes such as "serves as," "stands as," "represents," "boasts," "features," or "offers."
 
 Direct replacements:
 
@@ -122,7 +122,7 @@ These checks apply to every reply and to every file you write.
 
 ## Typography
 
-- Use normal sentence punctuation. Do not use em dashes, en dashes, or a spaced hyphen standing in for one, in chat or in files you write; use a comma, colon, semicolon, or period.
+- Use normal sentence punctuation. Do not use em dashes, en dashes, or a spaced hyphen standing in for one, in chat or in files you write. End the sentence or use a comma or semicolon; parentheses as a dash stand-in trade one tell for another.
 - Use a colon before a list, an example, or a label. Do not use one as a mid-sentence connector.
 - Do not use italics or bold for conversational emphasis. Bold is reserved for a short safety warning or a label that genuinely improves scanning.
 - No inline-header lists, where a bold label and colon restate the line ("**Performance:** Performance improved"). Write the line as a sentence.
