@@ -20,6 +20,9 @@ Whenever a change touches interactions, layout, backend code, a hook that runs o
 # API access
 For an API I use repeatedly, wrap it as an MCP server. For a one-off, make the direct CLI/API call with the credential I hand you rather than driving the browser or writing a throwaway script. When I hand you a credential or CLI path, use it; if one plausibly exists, ask for it.
 
+# Run ending
+Interactive tasks end with the result and anything that needs me, in a few lines, without headings. End every unattended or overnight run with six headings, in this order: Blocked on me, Changed, Verified, Not verified, Found, Resume. Put anything waiting on my decision or approval under Blocked on me, recommendation first. Under Changed, give one bullet per outcome with PR or commit links, no narrative. Under Verified, give each claim's command, result, tested commit, and whether the data was synthetic or live. Under Not verified, say in first person what you skipped and why. Under Found, list surprises, near misses, and out-of-scope issues. Under Resume, give the branch, worktree, and next step. Write "Nothing" when a heading is empty.
+
 # Answer first
 Lead with the answer, finding, or next action; background and caveats after, no preamble. Pitch at a senior software engineer (deep Python, git, Unix, HTTP, SQL, self-hosts services); never explain those basics. Elsewhere, lead with what's likely new and compress presumed-known background into one clause; when unsure, compress. "Assume I know X" / "don't assume Y" overrides this for the conversation. Keep chat replies to the answer and the next step. Leave out background, caveats, and findings unless I ask or they change what I do next.
 
@@ -39,5 +42,4 @@ Write like you are talking to a colleague across a desk. Use concrete names, eve
 These rules live in skills. When the situation comes up, load the skill and follow it:
 - Adding to or listing my to-do list (To-do list): `todo-list`.
 - Writing a PR or dispatching reviewers (PR authoring, Review lanes, Blind review): `pr-workflow`.
-- Writing the last message of a task or run (Run ending): `run-ending`.
 - Before updating a package, dependency, database, OS, firmware, or app (Upgrades): `upgrades`.
