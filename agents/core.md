@@ -14,26 +14,11 @@ Run the required checks and report their output. Inspect tracked changes, untrac
 # Scratch cleanup
 Agents remove what they create when their task ends: scratch directories, downloaded browsers and packages, caches filled only for that task, and temp files. Keep only deliverables and files the report names, and list anything left behind with why.
 
-# To-do list
-GitHub issues are my to-do list. When I ask to add something, search the repo's issues first, then link the existing issue or file a new one in the same reply. When I ask what's on the list, show the open issues as titled links.
-
-# Blind review
-Give reviewers the artifact and acceptance criteria without expected findings.
-
-# Review lanes
-When a diff is larger than you'd read line by line, or handles input someone else controls while taking outward or hard-to-undo actions (sending mail or messages, payments, deletes, unsubscribes, public posts), run reviewers in parallel, one per lens. One `reviewer` checks the spec and correctness. A red-team `reviewer` gets the artifact plus a threat statement: who controls which inputs, and what the code can do outbound. It tries to make the code break a stated rule, and confirms each finding with a probe against fakes. Otherwise, one blind reviewer. The threat statement names the attack surface, not expected findings.
-
 # Review evidence
 Whenever a change touches interactions, layout, backend code, a hook that runs on every tool call, app UI, or how a list moves, load the `review-evidence` skill and record the evidence it lists before review, merge, or shipping, including direct-to-main changes.
 
-# PR authoring
-Title: a standalone imperative sentence. Body: open with exactly 3 plain lines: what merging does, what breaks if it's wrong, and how to undo it. When the change is hard to judge from text, add one `Explainer: <url>` line after them. Put the rest in a `<details>` fold: why (issue link + problem), caveats and intentional exclusions, what as short bullets, then a `## Validation` section (commands + results) on every code PR. Teach what the diff can't; never re-narrate the diff or how you produced it; keep it shorter than the diff on small changes. Past ~200 lines, add a "start reading at" pointer. Prefer stacked single-purpose PRs. Before opening a PR, list the separate concerns in the diff. If there is more than one, split them into stacked PRs or say in the body why they belong together. Never use a line-count limit or a blocking size check.
-
 # API access
 For an API I use repeatedly, wrap it as an MCP server. For a one-off, make the direct CLI/API call with the credential I hand you rather than driving the browser or writing a throwaway script. When I hand you a credential or CLI path, use it; if one plausibly exists, ask for it.
-
-# Run ending
-Interactive tasks end with the result and anything that needs me, in a few lines, without headings. End every unattended or overnight run with six headings, in this order: Blocked on me, Changed, Verified, Not verified, Found, Resume. Put anything waiting on my decision or approval under Blocked on me, recommendation first. Under Changed, give one bullet per outcome with PR or commit links, no narrative. Under Verified, give each claim's command, result, tested commit, and whether the data was synthetic or live. Under Not verified, say in first person what you skipped and why. Under Found, list surprises, near misses, and out-of-scope issues. Under Resume, give the branch, worktree, and next step. Write "Nothing" when a heading is empty.
 
 # Answer first
 Lead with the answer, finding, or next action; background and caveats after, no preamble. Pitch at a senior software engineer (deep Python, git, Unix, HTTP, SQL, self-hosts services); never explain those basics. Elsewhere, lead with what's likely new and compress presumed-known background into one clause; when unsure, compress. "Assume I know X" / "don't assume Y" overrides this for the conversation. Keep chat replies to the answer and the next step. Leave out background, caveats, and findings unless I ask or they change what I do next.
@@ -50,5 +35,9 @@ When you reference anything at a URL, give the direct link inline as descriptive
 # Plain language
 Write like you are talking to a colleague across a desk. Use concrete names, everyday words, and one idea per sentence. If a reply needs a second read, rewrite it. When you mention an issue or PR by number, name what it is in the same sentence, e.g. "#12 (the login timeout fix)". A bare number is fine only when the same reply has already named it.
 
-# Upgrades
-Before updating anything (a package, dependency, database, OS, firmware, or app), check its release notes or upgrade guide for a required intermediate version. If the jump from the current version to the target skips a required stop, update to that intermediate version first, then to the target.
+# Skills for situations
+These rules live in skills. When the situation comes up, load the skill and follow it:
+- Adding to or listing my to-do list (To-do list): `todo-list`.
+- Writing a PR or dispatching reviewers (PR authoring, Review lanes, Blind review): `pr-workflow`.
+- Writing the last message of a task or run (Run ending): `run-ending`.
+- Before updating a package, dependency, database, OS, firmware, or app (Upgrades): `upgrades`.

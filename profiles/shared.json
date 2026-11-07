@@ -14,7 +14,19 @@
     ".claude/agents/drive.md": "claude/agents/drive.md",
     ".claude/agents/general-purpose.md": "claude/agents/general-purpose.md",
     ".claude/agents/gmail.md": "claude/agents/gmail.md",
-    ".claude/agents/researcher.md": "claude/agents/researcher.md"
+    ".claude/agents/researcher.md": "claude/agents/researcher.md",
+    ".claude/skills/todo-list/SKILL.md": "claude/skills/todo-list/SKILL.md",
+    ".codex/skills/todo-list/SKILL.md": "claude/skills/todo-list/SKILL.md",
+    ".copilot/skills/todo-list/SKILL.md": "claude/skills/todo-list/SKILL.md",
+    ".claude/skills/pr-workflow/SKILL.md": "claude/skills/pr-workflow/SKILL.md",
+    ".codex/skills/pr-workflow/SKILL.md": "claude/skills/pr-workflow/SKILL.md",
+    ".copilot/skills/pr-workflow/SKILL.md": "claude/skills/pr-workflow/SKILL.md",
+    ".claude/skills/run-ending/SKILL.md": "claude/skills/run-ending/SKILL.md",
+    ".codex/skills/run-ending/SKILL.md": "claude/skills/run-ending/SKILL.md",
+    ".copilot/skills/run-ending/SKILL.md": "claude/skills/run-ending/SKILL.md",
+    ".claude/skills/upgrades/SKILL.md": "claude/skills/upgrades/SKILL.md",
+    ".codex/skills/upgrades/SKILL.md": "claude/skills/upgrades/SKILL.md",
+    ".copilot/skills/upgrades/SKILL.md": "claude/skills/upgrades/SKILL.md"
   },
   "unix": {
     ".config/copilot-shell-defaults.sh": "copilot/shell-defaults.sh",
