@@ -159,7 +159,8 @@ class PrMergeGateTests(unittest.TestCase):
         extra=None,
         **bases,
     ):
-        # extra: optional "cwd" and "description" for the payload.
+        # extra: optional "cwd" and "description" for the payload, or "raw"
+        # text sent instead of the JSON payload.
         extra = extra or {}
         env = {
             **os.environ,
@@ -187,7 +188,7 @@ class PrMergeGateTests(unittest.TestCase):
         }
         return subprocess.run(
             [str(HOOK)],
-            input=json.dumps(payload),
+            input=extra.get("raw", json.dumps(payload)),
             env=env,
             capture_output=True,
             check=False,
@@ -341,8 +342,21 @@ class PrMergeGateTests(unittest.TestCase):
                     0,
                 )
 
+    def test_list_keeps_names_git_allows(self):
+        cmd = f"gh pr merge 8 -R {REPO}"
+        for name in ("release+2", "user@host", "fix#12"):
+            for protected in (f"main {name}", f"main,{name}", f"{name};main"):
+                with self.subTest(protected=protected):
+                    result = self.run_hook(cmd, base=name, protected=protected)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("protected base branch", result.stderr)
+                    self.assertEqual(
+                        self.run_hook(cmd, base="main", protected=protected).returncode,
+                        2,
+                    )
+
     def test_list_without_branch_names_fails_closed(self):
-        for protected in (",", " ; ", "   ", "-x"):
+        for protected in (",", " ; ", "   "):
             with self.subTest(protected=protected):
                 result = self.run_hook(
                     f"gh pr merge 8 -R {REPO}", base="dev", protected=protected
@@ -353,6 +367,68 @@ class PrMergeGateTests(unittest.TestCase):
                 self.assertEqual(
                     self.run_hook("ls -la", protected=protected).returncode, 0
                 )
+
+    def test_list_with_an_invalid_name_fails_closed(self):
+        for bad in (
+            "-x",
+            "a..b",
+            "a~1",
+            "a^",
+            "a:b",
+            "a?",
+            "a*",
+            "a[1]",
+            "a\\b",
+            "a@{1}",
+            "a\x01b",
+        ):
+            with self.subTest(bad=bad):
+                result = self.run_hook(
+                    f"gh pr merge 8 -R {REPO}", base="dev", protected=f"main,{bad}"
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("PR_MERGE_GATE_PROTECTED_BASES", result.stderr)
+                self.assertIn(repr(bad), result.stderr)
+                self.assertEqual(
+                    self.run_hook("ls -la", protected=f"main,{bad}").returncode, 0
+                )
+
+    def test_canonical_number_and_repo_are_ascii(self):
+        for command in (
+            f"gh pr merge ٨ -R {REPO}",  # Arabic-Indic eight
+            f"gh pr merge ８ -R {REPO}",  # fullwidth eight
+            f"gh pr merge ² -R {REPO}",  # superscript two
+            "gh pr merge 8 -R о-org/example-repo",  # Cyrillic o
+            "gh pr merge 8 -R example-org/répo",
+        ):
+            with self.subTest(command=command):
+                result = self.run_hook(command, base="dev", protected="main")
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("one merge form the gate checks", result.stderr)
+        self.assertEqual(self.base_lookups(), [])
+
+    def test_malformed_payload_is_refused_unless_another_tool(self):
+        good = {"tool_name": "Bash", "tool_input": {"command": "ls"}}
+        for name, raw in [
+            ("truncated", json.dumps(good)[:-5]),
+            ("empty", ""),
+            ("missing tool_input", json.dumps({"tool_name": "Bash"})),
+            ("no tool name, no command", json.dumps({"tool_input": {}})),
+            ("array", json.dumps([good])),
+            ("two objects", json.dumps(good) + json.dumps(good)),
+            ("null command", json.dumps({"tool_input": {"command": None}})),
+        ]:
+            with self.subTest(name):
+                result = self.run_hook("", protected="main", extra={"raw": raw})
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("PR_MERGE_GATE_PROTECTED_BASES", result.stderr)
+        for raw in (
+            json.dumps({"tool_name": "Read", "tool_input": {"file_path": "/x"}}),
+            json.dumps({"tool_name": "Edit"}),
+        ):
+            with self.subTest(raw=raw):
+                result = self.run_hook("", protected="main", extra={"raw": raw})
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_red_team_cases_never_merge(self):
         # Every PR's base is main here, so any merge reaching gh is protected.
@@ -742,8 +818,9 @@ class WorktreeCleanupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.wt.exists())
 
-    # Protected list set together with a worktree: the canonical form with
-    # --delete-branch gets the same safe removal as the lone form above.
+    # Protected list set together with a worktree: the canonical form names
+    # its repo with -R, so gh never deletes a local branch and the hook never
+    # removes a worktree, whatever the remotes.
 
     def protect(self, remote="https://github.com/o/r.git"):
         self.env["PR_MERGE_GATE_PROTECTED_BASES"] = "main"
@@ -751,24 +828,43 @@ class WorktreeCleanupTests(unittest.TestCase):
             self.git(self.main, "remote", "add", "github", remote)
 
     @POSIX_GH
-    def test_protected_list_canonical_delete_removes_clean_worktree(self):
-        for remote in ("https://github.com/o/r.git", "git@github.com:O/R.git"):
-            with self.subTest(remote=remote):
-                subprocess.run(
-                    ["git", "-C", str(self.main), "remote", "remove", "github"],
-                    capture_output=True,
-                    check=False,
-                )
-                if not self.wt.exists():
-                    self.git(
-                        self.main, "worktree", "add", "-q", str(self.wt), "feature"
+    def test_protected_list_never_removes_a_worktree(self):
+        for remote in (
+            "https://github.com/o/r.git",
+            "git@github.com:O/R.git",
+            "https://example.invalid/o/r.git",
+            "",
+        ):
+            for command in (
+                "gh pr merge 1 -R o/r --squash --delete-branch",
+                "gh pr merge 1 -R o/r --merge --delete-branch --subject x",
+                f"cd '{self.main}' && gh pr merge 1 -R o/r --delete-branch",
+            ):
+                with self.subTest(remote=remote, command=command):
+                    self.env.pop("PR_MERGE_GATE_PROTECTED_BASES", None)
+                    subprocess.run(
+                        ["git", "-C", str(self.main), "remote", "remove", "github"],
+                        capture_output=True,
+                        check=False,
                     )
-                self.protect(remote)
-                result = self.hook("gh pr merge 1 -R o/r --squash --delete-branch")
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("removed clean worktree", result.stderr)
-                self.assertFalse(self.wt.exists())
-                self.assertTrue(self.main.exists())
+                    self.protect(remote)
+                    result = self.hook(command)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn("removed", result.stderr)
+                    self.assertTrue(self.wt.exists())
+                    self.assertIn(
+                        self.wt.as_posix(),
+                        self.git(self.main, "worktree", "list"),
+                    )
+
+    @POSIX_GH
+    def test_protected_list_fork_pr_with_a_local_branch_name_keeps_worktree(self):
+        # An outside fork's PR whose head branch is also called "feature": the
+        # local worktree on feature has nothing to do with it.
+        self.protect()
+        result = self.hook("gh pr merge 1 -R o/r --squash --delete-branch")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.wt.exists())
 
     @POSIX_GH
     def test_protected_list_never_removes_before_a_refusal(self):
@@ -796,51 +892,11 @@ class WorktreeCleanupTests(unittest.TestCase):
                 self.assertTrue(self.wt.exists())
 
     @POSIX_GH
-    def test_protected_list_blocks_unsafe_canonical_delete_with_working_steps(self):
-        for name, command, remote in [
-            (
-                "cd prefix",
-                f"cd '{self.main}' && gh pr merge 1 -R o/r --delete-branch",
-                "https://github.com/o/r.git",
-            ),
-            (
-                "other repo",
-                "gh pr merge 1 -R o/r --delete-branch",
-                "https://github.com/o/other.git",
-            ),
-            ("no github remote", "gh pr merge 1 -R o/r --delete-branch", ""),
-        ]:
-            with self.subTest(name):
-                self.env.pop("PR_MERGE_GATE_PROTECTED_BASES", None)
-                subprocess.run(
-                    ["git", "-C", str(self.main), "remote", "remove", "github"],
-                    capture_output=True,
-                    check=False,
-                )
-                self.protect(remote)
-                result = self.hook(command)
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn(
-                    f"git worktree remove '{self.wt.as_posix()}'", result.stderr
-                )
-                self.assertIn(
-                    "gh pr merge <number> -R <owner>/<repo> --delete-branch",
-                    result.stderr,
-                )
-                self.assertNotIn("lone", result.stderr)
-                self.assertTrue(self.wt.exists())
-        # The steps it gives work under the gate.
-        self.git(self.main, "worktree", "remove", str(self.wt))
-        result = self.hook("gh pr merge 1 -R o/r --delete-branch")
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    @POSIX_GH
     def test_protected_list_keeps_dirty_worktree(self):
         self.protect()
         (self.wt / "notes.txt").write_text("keep me")
         result = self.hook("gh pr merge 1 -R o/r --merge --delete-branch")
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("notes.txt", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.wt / "notes.txt").exists())
 
     @POSIX_GH

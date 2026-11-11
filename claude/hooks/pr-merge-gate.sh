@@ -13,10 +13,10 @@
 # and that PR's base is not listed, or it only passes the words as quoted text
 # to a program that can't run them (echo, grep, git commit, gh pr view, ...).
 # Parsing arbitrary shell can't be made complete, so everything else that
-# names a merge is refused. A set list naming no valid branch refuses merges.
+# names a merge is refused, as is any merge when the list names no branch or
+# a name git forbids. Under the list the hook never removes a worktree.
 set -uf  # -f: $repoflag and $cmd are word-split below and must not glob
 input=$(cat)
-canonical=""
 if [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
   # Every command goes to Python, which reads the command field itself: a
   # text filter on the raw JSON can't soundly tell which commands to skip.
@@ -26,7 +26,7 @@ if [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
   }
   # The script, a NUL, then the payload, all on stdin: an environment variable
   # caps the payload's size, and Windows Python can't read another fd.
-  # Exit 0 = allow, 3 = allowed canonical merge, anything else = refused.
+  # Exit 0 = allow, anything else = refused.
   { cat <<'PY'
 import codecs
 import json
@@ -36,8 +36,10 @@ import shlex
 import sys
 import warnings
 
-protected = [b for b in re.split(r"[\s,;]+", os.environ["PR_MERGE_GATE_PROTECTED_BASES"])
-             if re.fullmatch(r"[\w./-]+", b) and not b.startswith("-")]
+protected = [b for b in re.split(r"[\s,;]+", os.environ["PR_MERGE_GATE_PROTECTED_BASES"]) if b]
+# Names git itself forbids in a ref; one of these means the list is a typo.
+invalid = [b for b in protected
+           if b.startswith("-") or re.search(r"[\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{", b)]
 FORM = ("gh pr merge <number> -R <owner>/<repo> [--merge|--squash|--rebase] "
         "[--delete-branch] [--subject '<text>'] [--body '<text>']")
 # No --auto: the PR's base can change after auto-merge is armed.
@@ -173,13 +175,26 @@ def noncanonical(why):
 
 
 try:
-    cmd = json.loads(payload)["tool_input"]["command"]  # noqa: F821  set by the runner
-except (ValueError, KeyError, TypeError):
-    sys.exit(0)  # not a shell command
+    data = json.loads(payload)  # noqa: F821  set by the runner
+except ValueError:
+    data = None
+tool_input = data.get("tool_input") if isinstance(data, dict) else None
+cmd = tool_input.get("command") if isinstance(tool_input, dict) else None
+if cmd is None:
+    tool = data.get("tool_name") if isinstance(data, dict) else None
+    if isinstance(tool, str) and tool not in ("", "Bash"):
+        sys.exit(0)  # another tool, nothing to run
+    refuse("PR_MERGE_GATE_PROTECTED_BASES is set, and the hook input isn't one "
+           "JSON object with a string tool_input.command, so pr-merge-gate "
+           "can't check it for a merge.")
 if not isinstance(cmd, str):
     noncanonical("the command is not a single string")
 if not names_merge(cmd) or only_quoted_text(cmd):
     sys.exit(0)
+if invalid:
+    refuse(f"PR_MERGE_GATE_PROTECTED_BASES lists {invalid[0]!r}, which git "
+           "doesn't allow as a branch name, so the gate refuses every merge. "
+           "Fix the list; separate branches with spaces, commas, or semicolons.")
 if not protected:
     refuse("PR_MERGE_GATE_PROTECTED_BASES is set but names no valid branch name, so "
            "the gate refuses every merge. List branches separated by spaces, "
@@ -200,8 +215,8 @@ if words[:1] == ["cd"]:
 elif "&" in cmd:
     noncanonical("it has an &")
 if (words[:3] != ["gh", "pr", "merge"] or len(words) < 6
-        or not words[3].isdigit() or words[4] != "-R"
-        or not re.fullmatch(r"[\w.-]+/[\w.-]+", words[5])):
+        or not re.fullmatch(r"[0-9]+", words[3]) or words[4] != "-R"
+        or not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", words[5])):
     noncanonical("it must start with gh pr merge <number> -R <owner>/<repo>")
 num, repo, rest = words[3], words[5], words[6:]
 if any(w.startswith(("-R", "--repo")) for w in rest):
@@ -235,13 +250,12 @@ if base in protected:
            "(PR_MERGE_GATE_PROTECTED_BASES). Agents don't merge into it. Hand "
            "the PR to the owner as a link plus the merge command:\n"
            f"  {url}\n  gh pr merge {num} -R {repo} --merge --delete-branch")
-sys.exit(3)
 PY
     printf '\0%s' "$input"
   } | python3 -c 'import sys
 code, _, payload = sys.stdin.buffer.read().decode("utf-8", "replace").partition("\0")
 exec(code)'
-  case $? in 0) ;; 3) canonical=1 ;; *) exit 2 ;; esac
+  [ $? -eq 0 ] || exit 2
 fi
 command -v jq >/dev/null 2>&1 || exit 0
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
@@ -289,13 +303,12 @@ for a in args:
                 v["delete"] = "?" if "=" in a or v["delete"] == "?" else "1"
     elif not a.startswith("-") and not v["pr"]:
         v["pr"] = a
-if (i == 0 and v["delete"] == "1" and v["pr"].isdigit()
-        and (not v["repo"] or sys.argv[2] == "1")
+if (i == 0 and v["delete"] == "1" and v["pr"].isdigit() and not v["repo"]
         and not v["auto"] and not re.search("[$`]", c)
         and not any(set(x) <= set(p) for x in t)):
     v["safe"] = "1"
 print(" ".join(k + "=" + shlex.quote(x) for k, x in v.items()))
-' "$cmd" "$canonical" 2>/dev/null); then
+' "$cmd" 2>/dev/null); then
   eval "$out"
 else
   # Unparseable or no python3: the old word-split extraction for the PR and
@@ -345,6 +358,9 @@ MSG
 exit 2
 fi
 
+# Under the gate the only merge allowed names its repo with -R, and gh never
+# deletes a local branch then, so no worktree stands in its way: never touch one.
+[ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ] && exit 0
 [ -n "$delete" ] || exit 0
 # The first worktree listed is the main checkout; only linked ones are removed.
 wts=$(git worktree list --porcelain 2>/dev/null) || exit 0
@@ -362,23 +378,11 @@ BLOCKED: $head is registered to the worktree $wt, whose directory is gone, so
 MSG
 exit 2
 fi
-# A canonical merge names its repo with -R; only touch worktrees of a checkout
-# with a remote for that repo, as gh's own inference would for the lone form.
-if [ -n "$safe" ] && [ -n "$repo" ]; then
-  safe=""
-  want=$(printf '%s/%s' "$owner" "$name" | tr 'A-Z' 'a-z')
-  for u in $(git remote -v 2>/dev/null | awk '{print $2}' | tr 'A-Z' 'a-z'); do
-    case "${u%.git}" in */"$want"|*:"$want") safe=1 ;; esac
-  done
-fi
-lone="lone \`gh pr merge <number> ... -d\`
-command"
-[ -n "$canonical" ] && lone="\`gh pr merge <number> -R <owner>/<repo> --delete-branch\`
-command run on its own from a checkout of that repo"
 if [ -z "$safe" ]; then
 cat >&2 <<MSG
 BLOCKED: this merge may delete $head, which is checked out in the worktree
-$wt. The hook only removes it for a $lone. If that worktree is clean and pushed, remove it first, then retry:
+$wt. The hook only removes it for a lone \`gh pr merge <number> ... -d\`
+command. If that worktree is clean and pushed, remove it first, then retry:
   git worktree remove '$wt'
 MSG
 exit 2
