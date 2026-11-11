@@ -471,6 +471,11 @@ class PrMergeGateTests(unittest.TestCase):
         self.assertEqual(self.gh_calls(), [])
 
 
+# The gate's Python runs gh through subprocess, which on Windows finds the
+# real gh.exe rather than the sh fake, as for PrMergeGateTests.
+POSIX_GH = unittest.skipIf(os.name == "nt", "needs the sh fake gh")
+
+
 FAKE_GH = """#!/bin/sh
 case "$*" in
   "pr view"*baseRefName*) echo "$*" >> "$GH_LOG"; echo "${FAKE_BASE:-dev} https://github.com/o/r/pull/1" ;;
@@ -745,6 +750,7 @@ class WorktreeCleanupTests(unittest.TestCase):
         if remote:
             self.git(self.main, "remote", "add", "github", remote)
 
+    @POSIX_GH
     def test_protected_list_canonical_delete_removes_clean_worktree(self):
         for remote in ("https://github.com/o/r.git", "git@github.com:O/R.git"):
             with self.subTest(remote=remote):
@@ -764,6 +770,7 @@ class WorktreeCleanupTests(unittest.TestCase):
                 self.assertFalse(self.wt.exists())
                 self.assertTrue(self.main.exists())
 
+    @POSIX_GH
     def test_protected_list_never_removes_before_a_refusal(self):
         self.protect()
         for command, env, why in [
@@ -788,6 +795,7 @@ class WorktreeCleanupTests(unittest.TestCase):
                 self.assertIn(why, result.stderr)
                 self.assertTrue(self.wt.exists())
 
+    @POSIX_GH
     def test_protected_list_blocks_unsafe_canonical_delete_with_working_steps(self):
         for name, command, remote in [
             (
@@ -826,6 +834,7 @@ class WorktreeCleanupTests(unittest.TestCase):
         result = self.hook("gh pr merge 1 -R o/r --delete-branch")
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    @POSIX_GH
     def test_protected_list_keeps_dirty_worktree(self):
         self.protect()
         (self.wt / "notes.txt").write_text("keep me")
@@ -834,6 +843,7 @@ class WorktreeCleanupTests(unittest.TestCase):
         self.assertIn("notes.txt", result.stderr)
         self.assertTrue((self.wt / "notes.txt").exists())
 
+    @POSIX_GH
     def test_protected_list_canonical_without_delete_leaves_worktree(self):
         self.protect()
         result = self.hook("gh pr merge 1 -R o/r --squash")
