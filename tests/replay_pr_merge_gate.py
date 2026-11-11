@@ -4,8 +4,11 @@
 
 Reads ~/.claude/projects/**/*.jsonl, keeps Bash calls from the last --days, and
 runs each through the hook with PR_MERGE_GATE_PROTECTED_BASES set to
---protected. Lookups query GitHub read-only for each PR's current state, so
-verdicts reflect today's PRs, not the day of the call. Prints how many calls it
+--protected. The hook runs in a throwaway directory with a fake git that does
+nothing and a fake gh that passes only `gh pr view` to the real gh, so a replay
+can't remove a worktree or write to GitHub. Lookups query GitHub read-only for
+each PR's current state, so verdicts reflect today's PRs, not the day of the
+call. Unresolved review threads aren't looked up. Prints how many calls it
 would block, the top reasons, and hook latency. For real `gh pr merge` calls
 refused only for their form, it also looks up where they merged, to show how
 many merges into unprotected bases the canonical form would now refuse.
@@ -17,8 +20,11 @@ import datetime
 import json
 import os
 import re
+import shlex
+import shutil
 import statistics
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -78,6 +84,22 @@ def merge_base(match, cwd):
     return f"into {base}" if base else "base unresolved"
 
 
+def fake_tools():
+    """A throwaway directory holding a do-nothing git and a gh that only runs
+    the real `gh pr view`."""
+    scratch = Path(tempfile.mkdtemp(prefix="replay-pr-merge-gate-"))
+    real_gh = shutil.which("gh") or "/nonexistent/gh"
+    (scratch / "gh").write_text(
+        "#!/bin/sh\n"
+        f'[ "$1 $2" = "pr view" ] && exec {shlex.quote(real_gh)} "$@"\n'
+        "exit 1\n"
+    )
+    (scratch / "git").write_text("#!/bin/sh\nexit 1\n")
+    (scratch / "gh").chmod(0o755)
+    (scratch / "git").chmod(0o755)
+    return scratch
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=7)
@@ -86,17 +108,23 @@ def main():
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
         days=args.days
     )
-    env = {**os.environ, "PR_MERGE_GATE_PROTECTED_BASES": args.protected}
+    scratch = fake_tools()
+    env = {
+        **os.environ,
+        "PATH": f"{scratch}{os.pathsep}{os.environ['PATH']}",
+        "PR_MERGE_GATE_PROTECTED_BASES": args.protected,
+    }
     reasons = collections.Counter()
     timings = {"merge": [], "other": []}
     total = 0
     for tool_input, cwd in calls(since):
         total += 1
-        payload = json.dumps({"tool_input": tool_input, "cwd": cwd})
+        payload = json.dumps({"cwd": str(scratch), "tool_input": tool_input})
         start = time.perf_counter()
         result = subprocess.run(
             [str(HOOK)],
             input=payload,
+            cwd=scratch,
             env=env,
             capture_output=True,
             check=False,
@@ -120,6 +148,7 @@ def main():
                 reasons["protected base: " + first.split(" merges into ")[1].split(",")[0]] += 1
             else:
                 reasons["unresolved review threads"] += 1
+    shutil.rmtree(scratch)
     print(f"{total} Bash calls in the last {args.days} days")
     print(f"would block {sum(reasons.values())}")
     for reason, count in reasons.most_common():

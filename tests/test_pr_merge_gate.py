@@ -1,10 +1,12 @@
 """pr-merge-gate.sh: protected bases, and freeing the head branch's worktree
 before --delete-branch."""
 
+import datetime
 import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +21,8 @@ REPO = "example-org/example-repo"
 # with the fixture unresolved threads.
 STUB = """#!/bin/sh
 printf '%s|%s\\n' "$PWD" "$*" >> "$GH_STUB_LOG"
+printf '%s\\036' "$PWD" "$@" >> "$GH_STUB_ARGS"
+printf '\\035' >> "$GH_STUB_ARGS"
 case "$1 $2" in
   "pr view")
     sel=$3; case "$sel" in ''|-*|*[!0-9]*) sel=7 ;; esac
@@ -91,6 +95,37 @@ RED_TEAM = {
     "graphql merge mutation, no braces": "gh api graphql -f query=@q -F mergePullRequest=1",
 }
 
+# Merges whose program word or merge path is spelled indirectly. Each must be
+# refused while a protected list is set.
+OBFUSCATED = [
+    "${x:-gh} pr merge 7 -R o/r",
+    "$'\\x67h' pr merge 7 -R o/r",
+    "$'\\147h' pr merge 7 -R o/r",
+    "x=h; g$x pr merge 7 -R o/r",
+    "g=g; ${g}h pr merge 7 -R o/r",
+    "$(printf '\\147\\150') pr merge 7 -R o/r",
+    "/some/dir/g[h] pr merge 7 -R o/r",
+    "gh api -X PUT repos/o/r/pulls/7/mer${x:-g}e",
+    "echo '${'; gh pr merge 7 -R o/r",
+    "echo '${' && gh pr merge 7 -R o/r",
+]
+
+# Commands that mention the gated words but cannot run a merge.
+HARMLESS = [
+    "echo 'run gh pr merge 7 -R o/r once CI passes'",
+    "git commit -m 'Let the gate refuse gh pr merge into main'",
+    "grep -n 'gh pr merge' claude/hooks/pr-merge-gate.sh",
+    "gh pr view 7 -R o/r --json body -q '.body | test(\"gh pr merge\")'",
+    "printf '%s\\n' \"gh api repos/o/r/pulls/7/merge\"",
+    "git log --oneline --grep='pr merge' | head -5",
+    "gh issue comment 5 --body 'Use gh pr merge 7 -R o/r after review'",
+    "gh pr create --title 'Gate gh pr merge' --body 'Refuses merges into main.'",
+    "gh api repos/o/r/pulls/7 --jq '.mergeable, .mergeable_state'",
+    "gh api repos/o/r/pulls/7 --jq .mergeable 2>&1 | head -5",
+    'gh api -X PATCH repos/o/r/issues/comments/1 -f body="Ready to merge" >/dev/null',
+    'grep -n "gh pr merge\\|pr view" claude/hooks/pr-merge-gate.sh',
+]
+
 CANONICAL = [
     f"gh pr merge 8 -R {REPO}",
     f"gh pr merge 8 -R {REPO} --merge --delete-branch",
@@ -113,12 +148,24 @@ class PrMergeGateTests(unittest.TestCase):
         gh.write_text(STUB)
         gh.chmod(0o755)
         self.log = self.dir / "gh.log"
+        self.args_log = self.dir / "gh.args"
 
-    def run_hook(self, command, base="main", protected=None, threads="", **bases):
+    def run_hook(
+        self,
+        command,
+        base="main",
+        protected=None,
+        threads="",
+        extra=None,
+        **bases,
+    ):
+        # extra: optional "cwd" and "description" for the payload.
+        extra = extra or {}
         env = {
             **os.environ,
             "PATH": f"{self.dir}{os.pathsep}{os.environ['PATH']}",
             "GH_STUB_LOG": str(self.log),
+            "GH_STUB_ARGS": str(self.args_log),
             "GH_STUB_URL": URL,
             "GH_STUB_BASE": base,
             "GH_STUB_THREADS": threads,
@@ -128,10 +175,15 @@ class PrMergeGateTests(unittest.TestCase):
             env.pop(key, None)
         if protected is not None:
             env["PR_MERGE_GATE_PROTECTED_BASES"] = protected
+        tool_input = {"command": command}
+        if "description" in extra:
+            # Placed first so its text precedes the command in the JSON.
+            tool_input = {"description": extra["description"], **tool_input}
+        # Field order as Claude Code sends it: cwd before tool_input.
         payload = {
+            "cwd": str(extra.get("cwd", self.dir)),
             "tool_name": "Bash",
-            "tool_input": {"command": command},
-            "cwd": str(self.dir),
+            "tool_input": tool_input,
         }
         return subprocess.run(
             [str(HOOK)],
@@ -213,6 +265,95 @@ class PrMergeGateTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.gh_calls(), [])
 
+    def test_obfuscated_merges_are_refused(self):
+        for command in OBFUSCATED:
+            with self.subTest(command=command):
+                result = self.run_hook(command, base="dev", protected="main")
+                self.assertEqual(result.returncode, 2, f"{command!r} was allowed")
+                self.assertIn("one merge form the gate checks", result.stderr)
+        self.assertEqual(self.base_lookups(), [])
+
+    def test_verdict_depends_only_on_the_command(self):
+        # Text in other fields, such as an unclosed ${, must not hide the
+        # command from the check.
+        weird = self.dir / "a ${b"
+        weird.mkdir()
+        for extra in ({}, {"description": "see ${HOME"}, {"cwd": weird}):
+            with self.subTest(extra=extra):
+                into_main = self.run_hook(
+                    f"gh pr merge 7 -R {REPO}", protected="main", extra=extra
+                )
+                self.assertEqual(into_main.returncode, 2, into_main.stderr)
+                self.assertIn("protected base branch", into_main.stderr)
+                into_dev = self.run_hook(
+                    f"gh pr merge 7 -R {REPO}",
+                    base="dev",
+                    protected="main",
+                    extra=extra,
+                )
+                self.assertEqual(into_dev.returncode, 0, into_dev.stderr)
+                harmless = self.run_hook("ls -la", protected="main", extra=extra)
+                self.assertEqual(harmless.returncode, 0, harmless.stderr)
+
+    def test_harmless_mentions_are_allowed(self):
+        for command in HARMLESS:
+            with self.subTest(command=command):
+                result = self.run_hook(command, protected="main")
+                self.assertEqual(result.returncode, 0, result.stderr)
+        # Text containing "gh pr merge" still reaches the original thread
+        # check, as without a list; the gate itself looks nothing up.
+        self.assertEqual(self.base_lookups(), [])
+
+    def test_harmless_shape_still_refuses_what_could_run(self):
+        for command in (
+            "echo 'gh pr merge 7 -R o/r' | sh",
+            "echo 'gh pr merge 7 -R o/r' > x.sh",
+            "git commit -m 'gh pr merge' && sh x.sh",
+            "git -c alias.x='!gh pr merge 7' x",
+            "gh pr view 7 && gh pr merge 7",
+            'echo "$(gh pr merge 7 -R o/r)"',
+            "gh alias set m 'pr merge'",
+            "gh api 'repos/o/r/pulls/7/merge' -X PUT",
+            "gh api -X PUT repos/o/r/pulls/7/merge --jq .sha",
+            "gh api -X POST repos/o/r/merges -f base=main -f head=x",
+            "gh api graphql -f query='mutation{mergePullRequest}'",
+            "gh api graphql -f query='mutation{mergePullRequest}' 2>/dev/null",
+            "echo 'gh pr merge 7' > /dev/nullx",
+        ):
+            with self.subTest(command=command):
+                result = self.run_hook(command, base="dev", protected="main")
+                self.assertEqual(result.returncode, 2, f"{command!r} was allowed")
+
+    def test_list_accepts_commas_semicolons_and_spaces(self):
+        cmd = f"gh pr merge 8 -R {REPO}"
+        for protected in (
+            "main,release",
+            "main;release",
+            " main , release ",
+            "main\trelease",
+        ):
+            with self.subTest(protected=protected):
+                result = self.run_hook(cmd, base="release", protected=protected)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("protected base branch", result.stderr)
+                self.assertEqual(
+                    self.run_hook(cmd, base="dev", protected=protected).returncode,
+                    0,
+                )
+
+    def test_list_without_branch_names_fails_closed(self):
+        for protected in (",", " ; ", "   ", "-x"):
+            with self.subTest(protected=protected):
+                result = self.run_hook(
+                    f"gh pr merge 8 -R {REPO}", base="dev", protected=protected
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("PR_MERGE_GATE_PROTECTED_BASES", result.stderr)
+                self.assertIn("no valid branch name", result.stderr)
+                self.assertEqual(
+                    self.run_hook("ls -la", protected=protected).returncode, 0
+                )
+
     def test_red_team_cases_never_merge(self):
         # Every PR's base is main here, so any merge reaching gh is protected.
         for name, command in RED_TEAM.items():
@@ -270,13 +411,55 @@ class PrMergeGateTests(unittest.TestCase):
 
     def test_default_makes_the_same_gh_calls_as_before(self):
         self.run_hook("gh pr merge 7 -R o/r")
-        calls = [c.split("|", 1)[1] for c in self.gh_calls()]
-        self.assertEqual(
-            calls[0],
-            'pr view 7 -R o/r --json url,headRefName -q .url + " " + .headRefName',
+        # Every call from any directory, each as its full argument list.
+        calls = [
+            c.split("\036")[:-1] for c in self.args_log.read_text().split("\035") if c
+        ]
+        query = (
+            "\n  query($owner:String!,$name:String!,$num:Int!){ repository("
+            "owner:$owner,name:$name){\n    pullRequest(number:$num){ "
+            "reviewThreads(first:100){ nodes{\n      id isResolved path line "
+            "comments(first:1){ nodes{ author{login} body url } } } } } } }"
         )
-        self.assertTrue(calls[1].startswith("api graphql"))
-        self.assertEqual(len(calls), 2)
+        jq = (
+            ".data.repository.pullRequest.reviewThreads.nodes[] | "
+            "select(.isResolved|not)\n      | "
+            r'"\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)'
+            r"\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | "
+            r'gsub("\n";" ") | .[:160])"'
+        )
+        self.assertEqual(
+            calls,
+            [
+                [
+                    str(self.dir),
+                    "pr",
+                    "view",
+                    "7",
+                    "-R",
+                    "o/r",
+                    "--json",
+                    "url,headRefName",
+                    "-q",
+                    '.url + " " + .headRefName',
+                ],
+                [
+                    str(self.dir),
+                    "api",
+                    "graphql",
+                    "-f",
+                    "owner=example-org",
+                    "-f",
+                    "name=example-repo",
+                    "-F",
+                    "num=7",
+                    "-f",
+                    "query=" + query,
+                    "-q",
+                    jq,
+                ],
+            ],
+        )
 
     def test_default_still_blocks_unresolved_threads(self):
         result = self.run_hook("gh pr merge 7", base="dev", threads="T1\tf.py:3")
@@ -290,6 +473,7 @@ class PrMergeGateTests(unittest.TestCase):
 
 FAKE_GH = """#!/bin/sh
 case "$*" in
+  "pr view"*baseRefName*) echo "$*" >> "$GH_LOG"; echo "${FAKE_BASE:-dev} https://github.com/o/r/pull/1" ;;
   "pr view"*) echo "$*" >> "$GH_LOG"; echo "https://github.com/o/r/pull/1 feature" ;;
   "api graphql"*) [ -n "${FAKE_THREAD:-}" ] && echo "$FAKE_THREAD" ;;
 esac
@@ -552,6 +736,204 @@ class WorktreeCleanupTests(unittest.TestCase):
         result = self.hook("gh pr merge 1 --squash")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.wt.exists())
+
+    # Protected list set together with a worktree: the canonical form with
+    # --delete-branch gets the same safe removal as the lone form above.
+
+    def protect(self, remote="https://github.com/o/r.git"):
+        self.env["PR_MERGE_GATE_PROTECTED_BASES"] = "main"
+        if remote:
+            self.git(self.main, "remote", "add", "github", remote)
+
+    def test_protected_list_canonical_delete_removes_clean_worktree(self):
+        for remote in ("https://github.com/o/r.git", "git@github.com:O/R.git"):
+            with self.subTest(remote=remote):
+                subprocess.run(
+                    ["git", "-C", str(self.main), "remote", "remove", "github"],
+                    capture_output=True,
+                    check=False,
+                )
+                if not self.wt.exists():
+                    self.git(
+                        self.main, "worktree", "add", "-q", str(self.wt), "feature"
+                    )
+                self.protect(remote)
+                result = self.hook("gh pr merge 1 -R o/r --squash --delete-branch")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("removed clean worktree", result.stderr)
+                self.assertFalse(self.wt.exists())
+                self.assertTrue(self.main.exists())
+
+    def test_protected_list_never_removes_before_a_refusal(self):
+        self.protect()
+        for command, env, why in [
+            ("gh pr merge 1 --squash -d", {}, "one merge form"),
+            (
+                "gh pr merge 1 -R o/r --delete-branch",
+                {"FAKE_BASE": "main"},
+                "protected base branch",
+            ),
+            (
+                "gh pr merge 1 -R o/r --delete-branch",
+                {"FAKE_THREAD": "T1\tf.py:1\tbot\thttps://example.invalid/c1"},
+                "unresolved review threads",
+            ),
+        ]:
+            with self.subTest(command=command, why=why):
+                self.env.update(env)
+                result = self.hook(command)
+                for key in env:
+                    self.env.pop(key)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(why, result.stderr)
+                self.assertTrue(self.wt.exists())
+
+    def test_protected_list_blocks_unsafe_canonical_delete_with_working_steps(self):
+        for name, command, remote in [
+            (
+                "cd prefix",
+                f"cd '{self.main}' && gh pr merge 1 -R o/r --delete-branch",
+                "https://github.com/o/r.git",
+            ),
+            (
+                "other repo",
+                "gh pr merge 1 -R o/r --delete-branch",
+                "https://github.com/o/other.git",
+            ),
+            ("no github remote", "gh pr merge 1 -R o/r --delete-branch", ""),
+        ]:
+            with self.subTest(name):
+                self.env.pop("PR_MERGE_GATE_PROTECTED_BASES", None)
+                subprocess.run(
+                    ["git", "-C", str(self.main), "remote", "remove", "github"],
+                    capture_output=True,
+                    check=False,
+                )
+                self.protect(remote)
+                result = self.hook(command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(
+                    f"git worktree remove '{self.wt.as_posix()}'", result.stderr
+                )
+                self.assertIn(
+                    "gh pr merge <number> -R <owner>/<repo> --delete-branch",
+                    result.stderr,
+                )
+                self.assertNotIn("lone", result.stderr)
+                self.assertTrue(self.wt.exists())
+        # The steps it gives work under the gate.
+        self.git(self.main, "worktree", "remove", str(self.wt))
+        result = self.hook("gh pr merge 1 -R o/r --delete-branch")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_protected_list_keeps_dirty_worktree(self):
+        self.protect()
+        (self.wt / "notes.txt").write_text("keep me")
+        result = self.hook("gh pr merge 1 -R o/r --merge --delete-branch")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("notes.txt", result.stderr)
+        self.assertTrue((self.wt / "notes.txt").exists())
+
+    def test_protected_list_canonical_without_delete_leaves_worktree(self):
+        self.protect()
+        result = self.hook("gh pr merge 1 -R o/r --squash")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.wt.exists())
+
+
+@unittest.skipUnless(
+    os.name != "nt"
+    and shutil.which("sh")
+    and shutil.which("jq")
+    and shutil.which("git"),
+    "needs sh, jq, and git",
+)
+class ReplayIsReadOnlyTests(unittest.TestCase):
+    """The replay script runs the hook on real transcript commands; it must
+    never act on the directories those commands ran in."""
+
+    def test_replay_leaves_a_real_worktree_in_place(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "gh").write_text(FAKE_GH)
+        (bin_dir / "gh").chmod(0o755)
+        git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+        main, wt = root / "main", root / "wt"
+        for args in (
+            ["init", "-q", "--bare", str(root / "remote.git")],
+            ["clone", "-q", str(root / "remote.git"), str(main)],
+            ["-C", str(main), "commit", "-q", "--allow-empty", "-m", "base"],
+            ["-C", str(main), "push", "-q", "origin", "HEAD"],
+            ["-C", str(main), "branch", "feature"],
+            ["-C", str(main), "push", "-q", "origin", "feature"],
+            ["-C", str(main), "remote", "add", "github", "https://github.com/o/r"],
+            ["-C", str(main), "worktree", "add", "-q", str(wt), "feature"],
+        ):
+            subprocess.run([*git, *args], check=True, capture_output=True)
+        home = root / "home"
+        transcript = home / ".claude/projects/p/t.jsonl"
+        transcript.parent.mkdir(parents=True)
+        stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        transcript.write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "timestamp": stamp,
+                        "cwd": str(main),
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "Bash",
+                                    "input": {"command": command},
+                                }
+                            ]
+                        },
+                    }
+                )
+                + "\n"
+                for command in (
+                    "gh pr merge 7 --merge -d",
+                    "gh pr merge 7 -R o/r --merge --delete-branch",
+                )
+            )
+        )
+        env = {
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "GH_LOG": str(root / "gh.log"),
+        }
+        for protected in ("", "main"):
+            with self.subTest(protected=protected):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-B",
+                        str(ROOT / "tests/replay_pr_merge_gate.py"),
+                        "--days",
+                        "1",
+                        "--protected",
+                        protected,
+                    ],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("2 Bash calls", result.stdout)
+                self.assertTrue(wt.exists(), result.stdout + result.stderr)
+                listed = subprocess.run(
+                    ["git", "-C", str(main), "worktree", "list"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout
+                self.assertIn(wt.as_posix(), listed)
 
 
 if __name__ == "__main__":

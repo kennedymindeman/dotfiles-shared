@@ -5,36 +5,53 @@
 # linked worktree holding the head branch, since gh can't delete a branch that
 # is checked out (dotfiles#125). Exit 2 = block; anything else = allow.
 #
-# When PR_MERGE_GATE_PROTECTED_BASES lists base branches (space-separated,
-# default empty), merges into them stay with the owner: any command containing
-# the words `gh` and `merge` is refused unless it is exactly
+# When PR_MERGE_GATE_PROTECTED_BASES lists base branches (separated by spaces,
+# commas, or semicolons; default empty), merges into them stay with the owner:
+# a command that names a merge (gh and merge, `pr merge`, or a gh api merge
+# path, in any spelling the check understands) is refused unless it is exactly
 #   [cd <path> && ] gh pr merge <number> -R <owner>/<repo> [allowed flags]
-# and that PR's base is not listed. Parsing arbitrary shell can't be made
-# complete, so everything else that mentions both words is refused.
+# and that PR's base is not listed, or it only passes the words as quoted text
+# to a program that can't run them (echo, grep, git commit, gh pr view, ...).
+# Parsing arbitrary shell can't be made complete, so everything else that
+# names a merge is refused. A set list naming no valid branch refuses merges.
 set -uf  # -f: $repoflag and $cmd are word-split below and must not glob
 input=$(cat)
+canonical=""
 if [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
-  # Cheap pre-filter: strip quotes, backslashes and $ expansions, then look for
-  # both words in any case, so g''h, mer""ge, g\h and GH all reach Python.
-  bare=$(printf '%s' "$input" | sed -e 's/\${[^}]*}//g' -e 's/\$[A-Za-z0-9_]*//g' -e "s/[\"'\\\\\`]//g")
-  case "$bare" in *[gG][hH]*) case "$bare" in *[mM][eE][rR][gG][eE]*)
-    command -v python3 >/dev/null 2>&1 || {
-      echo "BLOCKED: python3 is missing, so pr-merge-gate can't check this command for a merge." >&2
-      exit 2
-    }
-    PR_MERGE_GATE_INPUT=$input python3 - <<'PY' || exit 2
+  # Every command goes to Python, which reads the command field itself: a
+  # text filter on the raw JSON can't soundly tell which commands to skip.
+  command -v python3 >/dev/null 2>&1 || {
+    echo "BLOCKED: PR_MERGE_GATE_PROTECTED_BASES is set but python3 is missing, so pr-merge-gate can't check this command for a merge." >&2
+    exit 2
+  }
+  # Exit 0 = allow, 3 = allowed canonical merge, anything else = refused.
+  printf '%s' "$input" | python3 -c 'exec(open(3).read())' 3<<'PY'
+import codecs
 import json
 import os
 import re
 import shlex
-import subprocess
 import sys
+import warnings
 
-protected = os.environ["PR_MERGE_GATE_PROTECTED_BASES"].split()
+protected = [b for b in re.split(r"[\s,;]+", os.environ["PR_MERGE_GATE_PROTECTED_BASES"])
+             if re.fullmatch(r"[\w./-]+", b) and not b.startswith("-")]
 FORM = ("gh pr merge <number> -R <owner>/<repo> [--merge|--squash|--rebase] "
         "[--delete-branch] [--subject '<text>'] [--body '<text>']")
 # No --auto: the PR's base can change after auto-merge is armed.
 SWITCHES = {"--merge", "--squash", "--rebase", "--delete-branch"}
+# Expansions, substitutions, and globs: each may stand for any text.
+EXPANSION = re.compile(r"\$\{[^}]*\}|\$\([^()]*\)|`[^`]*`|\$\w+|\$[?#@*!$-]|[*?]|\[[^\]]*\]")
+WILD = "\0"
+# Programs that print or store their arguments and can't run them.
+INERT = {"echo", "printf", "grep", "egrep", "fgrep", "head", "tail", "wc"}
+INERT_GIT = {"commit", "log", "show", "status"}
+INERT_GH = {("pr", s) for s in ("view", "list", "checks", "diff", "create", "comment")}
+INERT_GH |= {("issue", s) for s in ("view", "list", "create", "comment")}
+API_VALUE_FLAGS = {"-f", "-F", "--field", "--raw-field", "-q", "--jq", "-t",
+                   "--template", "-H", "--header", "-X", "--method",
+                   "--hostname", "--cache", "--input"}
+QUOTED = "\1"
 
 
 def possible_merge(text):
@@ -44,29 +61,127 @@ def possible_merge(text):
                 or (re.search(r"\bapi\b", text, re.I) and re.search("merge", text, re.I)))
 
 
+def ansi_c(match):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            return codecs.decode(match.group(1), "unicode_escape")
+        except (UnicodeDecodeError, ValueError):
+            return WILD
+
+
+def skeleton(cmd):
+    """Lowercased command with $'...' decoded, every expansion or glob turned
+    into WILD, and quotes and backslashes removed."""
+    text, prev = re.sub(r"\$'((?:[^'\\]|\\.)*)'", ansi_c, cmd), None
+    while prev != text:  # inner $(...) first
+        prev, text = text, EXPANSION.sub(WILD, text)
+    return re.sub(r"[\"'\\]", "", text).lower()
+
+
+def could_be(word, target):
+    """word, with WILD standing for any text, can spell target. Needs at least
+    one literal character, so a bare $x matches nothing."""
+    if not word.strip(WILD):
+        return False
+    return re.fullmatch(".*".join(map(re.escape, word.split(WILD))), target) is not None
+
+
+def could_contain_merge(word):
+    parts = word.split(WILD)
+    if any("merge" in p for p in parts):
+        return True
+    return any(left.endswith("merge"[:k]) or right.startswith("merge"[k:])
+               for left, right in zip(parts, parts[1:]) for k in range(1, 5))
+
+
+def names_merge(cmd):
+    bare = re.sub(r"\$\{[^}]*\}|\$\w+|[\"'\\`]", "", cmd)
+    if possible_merge(cmd) or possible_merge(bare):
+        return True
+    words = [w for w in re.split(r"[\s;&|()<>{}]+", skeleton(cmd)) if w]
+    gh = any(could_be(w.rsplit("/", 1)[-1], "gh") for w in words)
+    if any(could_be(a, "pr") and could_be(b, "merge") for a, b in zip(words, words[1:])):
+        return True
+    if gh and any(could_be(w, "merge") for w in words):
+        return True
+    return (gh and any(could_be(w, "api") for w in words)
+            and any(could_contain_merge(w) for w in words))
+
+
+def api_without_merge(words):
+    """A gh api call whose endpoint can't be a merge: outside flag values, no
+    word is quoted, names graphql, or contains merge."""
+    words = iter(words)
+    for word in words:
+        if word in API_VALUE_FLAGS:
+            next(words, None)
+        elif QUOTED in word or re.search("graphql|merge", word, re.I):
+            return False
+    return True
+
+
+def inert(words):
+    if not words or words[0] in INERT:
+        return True
+    if words[0] == "git":
+        return words[1:2] != [] and words[1] in INERT_GIT
+    if words[0] == "gh" and tuple(words[1:3]) in INERT_GH:
+        return True
+    return words[:2] == ["gh", "api"] and api_without_merge(words[2:])
+
+
+def only_quoted_text(cmd):
+    """Every simple command is an inert program, and quoting, chaining, pipes,
+    and discarding output are the only shell syntax: the words can't reach a
+    shell or a gh merge."""
+    masked, i = [], 0
+    while i < len(cmd):
+        quote = cmd[i]
+        if quote not in "'\"":
+            masked.append(quote)
+            i += 1
+            continue
+        j = i + 1
+        while j < len(cmd) and cmd[j] != quote:
+            j += 2 if quote == '"' and cmd[j] == "\\" else 1
+        if j >= len(cmd) or (quote == '"' and re.search(r"[$`]", cmd[i + 1:j])):
+            return False
+        masked.append(QUOTED)
+        i = j + 1
+    masked = re.sub(r"\d?>\s*(?:&\d|/dev/null)(?=\s|$|[;&|])", " ", "".join(masked))
+    if re.search(r"[$`\\<>(){}]|(?<!&)&(?!&)", masked):
+        return False
+    return all(inert(s.split()) for s in re.split(r"&&|\|\|?|;|\n", masked))
+
+
 def refuse(text):
     print("BLOCKED: " + text, file=sys.stderr)
     sys.exit(2)
 
 
 def noncanonical(why):
-    refuse("PR_MERGE_GATE_PROTECTED_BASES is set, and this command contains the "
-           f"words gh and merge without being the one merge form the gate checks "
+    refuse("PR_MERGE_GATE_PROTECTED_BASES is set, and this command names a "
+           f"merge without being the one merge form the gate checks "
            f"({why}). To merge, run only:\n  [cd <path> && ] {FORM}\n"
-           "If the command only mentions those words (echo, grep, a heredoc, a "
-           "commit message), rephrase it so it doesn't contain both, or write "
-           "the text with a file tool.")
+           "If the command only mentions merging, rephrase it: put the words in quotes as "
+           "an argument to echo, printf, grep, git commit/log, or gh pr/issue "
+           "view/create/comment, with no other shell syntax than && || ; |, "
+           "or write the text with a file tool.")
 
 
 try:
-    cmd = json.loads(os.environ["PR_MERGE_GATE_INPUT"])["tool_input"]["command"]
+    cmd = json.load(sys.stdin)["tool_input"]["command"]
 except (ValueError, KeyError, TypeError):
     sys.exit(0)  # not a shell command
 if not isinstance(cmd, str):
     noncanonical("the command is not a single string")
-bare = re.sub(r"\$\{[^}]*\}|\$\w+|[\"'\\`]", "", cmd)
-if not (possible_merge(cmd) or possible_merge(bare)):
+if not names_merge(cmd) or only_quoted_text(cmd):
     sys.exit(0)
+if not protected:
+    refuse("PR_MERGE_GATE_PROTECTED_BASES is set but names no valid branch name, so "
+           "the gate refuses every merge. List branches separated by spaces, "
+           "commas, or semicolons.")
 if re.search(r"[\n\r\\`$;|<>(){}*?\[\]~!]", cmd):
     noncanonical("it has a newline, backslash, backtick, or one of $ ; | < > ( ) { } * ? [ ] ~ !")
 lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
@@ -99,6 +214,7 @@ while rest:
     noncanonical(f"{word!r} is not an allowed flag here")
 
 # -R names the repo, so the lookup doesn't depend on the working directory.
+import subprocess  # noqa: E402  only merges pay for the import
 view = ["gh", "pr", "view", num, "-R", repo, "--json", "baseRefName,url",
         "-q", '.baseRefName + " " + .url']
 try:
@@ -117,8 +233,9 @@ if base in protected:
            "(PR_MERGE_GATE_PROTECTED_BASES). Agents don't merge into it. Hand "
            "the PR to the owner as a link plus the merge command:\n"
            f"  {url}\n  gh pr merge {num} -R {repo} --merge --delete-branch")
+sys.exit(3)
 PY
-  ;; esac ;; esac
+  case $? in 0) ;; 3) canonical=1 ;; *) exit 2 ;; esac
 fi
 command -v jq >/dev/null 2>&1 || exit 0
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
@@ -166,12 +283,13 @@ for a in args:
                 v["delete"] = "?" if "=" in a or v["delete"] == "?" else "1"
     elif not a.startswith("-") and not v["pr"]:
         v["pr"] = a
-if (i == 0 and v["delete"] == "1" and v["pr"].isdigit() and not v["repo"]
+if (i == 0 and v["delete"] == "1" and v["pr"].isdigit()
+        and (not v["repo"] or sys.argv[2] == "1")
         and not v["auto"] and not re.search("[$`]", c)
         and not any(set(x) <= set(p) for x in t)):
     v["safe"] = "1"
 print(" ".join(k + "=" + shlex.quote(x) for k, x in v.items()))
-' "$cmd" 2>/dev/null); then
+' "$cmd" "$canonical" 2>/dev/null); then
   eval "$out"
 else
   # Unparseable or no python3: the old word-split extraction for the PR and
@@ -238,11 +356,23 @@ BLOCKED: $head is registered to the worktree $wt, whose directory is gone, so
 MSG
 exit 2
 fi
+# A canonical merge names its repo with -R; only touch worktrees of a checkout
+# with a remote for that repo, as gh's own inference would for the lone form.
+if [ -n "$safe" ] && [ -n "$repo" ]; then
+  safe=""
+  want=$(printf '%s/%s' "$owner" "$name" | tr 'A-Z' 'a-z')
+  for u in $(git remote -v 2>/dev/null | awk '{print $2}' | tr 'A-Z' 'a-z'); do
+    case "${u%.git}" in */"$want"|*:"$want") safe=1 ;; esac
+  done
+fi
+lone="lone \`gh pr merge <number> ... -d\`
+command"
+[ -n "$canonical" ] && lone="\`gh pr merge <number> -R <owner>/<repo> --delete-branch\`
+command run on its own from a checkout of that repo"
 if [ -z "$safe" ]; then
 cat >&2 <<MSG
 BLOCKED: this merge may delete $head, which is checked out in the worktree
-$wt. The hook only removes it for a lone \`gh pr merge <number> ... -d\`
-command. If that worktree is clean and pushed, remove it first, then retry:
+$wt. The hook only removes it for a $lone. If that worktree is clean and pushed, remove it first, then retry:
   git worktree remove '$wt'
 MSG
 exit 2
