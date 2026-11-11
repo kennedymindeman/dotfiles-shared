@@ -24,8 +24,10 @@ if [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
     echo "BLOCKED: PR_MERGE_GATE_PROTECTED_BASES is set but python3 is missing, so pr-merge-gate can't check this command for a merge." >&2
     exit 2
   }
+  # The script, a NUL, then the payload, all on stdin: an environment variable
+  # caps the payload's size, and Windows Python can't read another fd.
   # Exit 0 = allow, 3 = allowed canonical merge, anything else = refused.
-  printf '%s' "$input" | python3 -c 'exec(open(3).read())' 3<<'PY'
+  { cat <<'PY'
 import codecs
 import json
 import os
@@ -171,7 +173,7 @@ def noncanonical(why):
 
 
 try:
-    cmd = json.load(sys.stdin)["tool_input"]["command"]
+    cmd = json.loads(payload)["tool_input"]["command"]  # noqa: F821  set by the runner
 except (ValueError, KeyError, TypeError):
     sys.exit(0)  # not a shell command
 if not isinstance(cmd, str):
@@ -235,6 +237,10 @@ if base in protected:
            f"  {url}\n  gh pr merge {num} -R {repo} --merge --delete-branch")
 sys.exit(3)
 PY
+    printf '\0%s' "$input"
+  } | python3 -c 'import sys
+code, _, payload = sys.stdin.buffer.read().decode("utf-8", "replace").partition("\0")
+exec(code)'
   case $? in 0) ;; 3) canonical=1 ;; *) exit 2 ;; esac
 fi
 command -v jq >/dev/null 2>&1 || exit 0
