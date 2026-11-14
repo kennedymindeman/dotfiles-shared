@@ -326,6 +326,42 @@ class LinkTests(unittest.TestCase):
         self.assertNotIn("Claude mechanics", claude)
         self.assertIn("Use focused changes", claude)
 
+    def test_rules_stay_utf8_under_non_utf8_default_encoding(self):
+        sources = {
+            self.repo / "agents/core.md": "Core — rule…\n",
+            self.repo / "agents/work.md": "Work — rule…\n",
+            self.repo / "copilot/copilot-instructions.md": "Copilot — rule…\n",
+            self.overlay / "agents/home.md": "Home — rule…\n",
+            self.overlay / "agents/home.claude.md": "Claude — rule…\n",
+        }
+        for path, content in sources.items():
+            self.write(path, content)
+        read_text = Path.read_text
+
+        # Simulate Windows, where an unspecified encoding means cp1252.
+        def cp1252_default(path, encoding=None, *args, **kwargs):
+            return read_text(path, encoding or "cp1252", *args, **kwargs)
+
+        with patch.object(Path, "read_text", cp1252_default):
+            self.apply("home", self.overlay)
+            home_claude = (self.home / ".claude/CLAUDE.md").read_bytes()
+            self.apply("work")
+        for name in ("core.md", "home.md", "home.claude.md"):
+            with self.subTest(name=name):
+                source = (self.overlay if "home" in name else self.repo) / "agents" / name
+                self.assertIn(sources[source].encode("utf-8"), home_claude)
+        for relative, names in {
+            "AGENTS.md": ("agents/core.md", "agents/work.md"),
+            ".copilot/copilot-instructions.md": (
+                "copilot/copilot-instructions.md",
+                "agents/core.md",
+            ),
+        }.items():
+            installed = (self.home / relative).read_bytes()
+            for name in names:
+                with self.subTest(relative=relative, name=name):
+                    self.assertIn(sources[self.repo / name].encode("utf-8"), installed)
+
     def test_modified_private_copy_blocks_transition(self):
         self.apply("home", self.overlay)
         target = self.home / ".config/private.txt"
