@@ -17,7 +17,15 @@
 # (dotfiles#125). Exit 2 = block; anything else = allow.
 #
 # It reads command text, so it catches mistakes, not an agent set on getting
-# around it. When PR_MERGE_GATE_PROTECTED_BASES is set (any non-empty value;
+# around it. Both modes first drop comments as bash does (an unquoted # that
+# starts a word, to the end of its line). Without the list, a command that
+# names `gh pr merge` passes unchecked only when every program in it is one
+# that can't run its arguments or input (the inert list below) and the only
+# shell syntax is quoting, && || ; |, and discarding output; anything else
+# that names it is a merge: checked when one merge's PR number can be read,
+# refused when it can't or when there is more than one. A gh command whose
+# command or subcommand word is entirely an expansion (gh pr $(cat f) 5) is
+# refused in both modes. When PR_MERGE_GATE_PROTECTED_BASES is set (any non-empty value;
 # it is still read as a list of branch names separated by spaces, commas, or
 # semicolons), the command form is strict: a command that names a merge (gh
 # and merge, `pr merge`, or a gh api merge path, in any spelling the check
@@ -25,7 +33,7 @@
 #   [cd <path> && ] gh pr merge <number> -R <owner>/<repo> [allowed flags]
 # where the allowed flags must include --match-head-commit <head sha>,
 # or it only passes the words as quoted text to a program that can't run them
-# (echo, grep, git commit, gh pr view, ...). Parsing arbitrary shell can't be
+# (echo, grep, rg, git commit, gh pr view, ...). Parsing arbitrary shell can't be
 # made complete, so everything else that names a merge is refused, as is any
 # merge when the list names no branch or a name git forbids. The list no longer
 # keeps any base from agents: the three conditions apply to every base. Under
@@ -36,9 +44,10 @@ canonical=""
 # The form check. The script, a NUL, then the payload, all on stdin: an
 # environment variable caps the payload's size, and Windows Python can't read
 # another fd. -I keeps the working directory and user site-packages off the
-# import path. Exit 0 = not a merge (or only quoted text for an inert
-# program), 3 = the checked merge form, 4 = a merge to check (no list set),
-# anything else = refused.
+# import path; -S skips the site module and its .pth files. Exit 0 = not a
+# merge (or only quoted text for an inert program), 3 = the checked merge
+# form, 4 = a merge to check (no list set), 2 = refused. For 3 and 4 it prints
+# the command without its comments.
 formcheck() {
   { cat <<'PY'
 import codecs
@@ -63,10 +72,16 @@ SWITCHES = {"--merge", "--squash", "--rebase", "--delete-branch"}
 EXPANSION = re.compile(r"\$\{[^}]*\}|\$\([^()]*\)|`[^`]*`|\$\w+|\$[?#@*!$-]|[*?]|\[[^\]]*\]")
 WILD = "\0"
 # Programs that print or store their arguments and can't run them.
-INERT = {"echo", "printf", "grep", "egrep", "fgrep", "head", "tail", "wc"}
-INERT_GIT = {"commit", "log", "show", "status"}
-INERT_GH = {("pr", s) for s in ("view", "list", "checks", "diff", "create", "comment")}
+INERT = {"echo", "printf", "grep", "egrep", "fgrep", "head", "tail", "wc", "cat", "rg"}
+INERT_GIT = {"commit", "log", "show", "status", "grep"}
+INERT_GH = {("pr", s) for s in ("view", "list", "checks", "diff", "create", "comment", "edit")}
 INERT_GH |= {("issue", s) for s in ("view", "list", "create", "comment")}
+# rg --pre and git grep -O/--open-files-in-pager run a program they are given.
+RUNS_PROGRAM = re.compile(r"--pre\b|--open-files-in-pager|(?<![\w-])-[A-Za-z]*O")
+MERGE = re.compile(r"\bgh\s+pr\s+merge\b")
+# Words that may come before a program name in a simple command.
+PREFIXES = {"do", "then", "else", "elif", "if", "while", "until", "!", "time",
+            "command", "exec", "env", "nohup"}
 API_VALUE_FLAGS = {"-f", "-F", "--field", "--raw-field", "-q", "--jq", "-t",
                    "--template", "-H", "--header", "-X", "--method",
                    "--hostname", "--cache", "--input"}
@@ -114,9 +129,91 @@ def could_contain_merge(word):
                for left, right in zip(parts, parts[1:]) for k in range(1, 5))
 
 
+def strip_comments(cmd):
+    """cmd without its comments: as bash reads it, an unquoted # that starts a
+    word runs to the end of its line. From a heredoc, a double-quoted $(...)
+    or backtick, or an unclosed quote on, the rest is kept as written."""
+    out, i, start, subst = [], 0, True, []
+    while i < len(cmd):
+        c = cmd[i]
+        if c == "\\":  # an escaped character; backslash-newline joins lines
+            out.append(cmd[i:i + 2])
+            start = start and cmd[i + 1:i + 2] == "\n"
+            i += 2
+            continue
+        if c == "#" and start:
+            end = cmd.find("\n", i)
+            i = len(cmd) if end < 0 else end
+            continue
+        if cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+            break
+        if c in "'\"`" or (c == "$" and cmd[i + 1:i + 2] in ("'", '"')):
+            j = i + 1 + (c == "$")
+            q, escapes = cmd[j - 1], cmd[j - 1] != "'" or c == "$"
+            while j < len(cmd) and cmd[j] != q:
+                j += 2 if escapes and cmd[j] == "\\" else 1
+            if j >= len(cmd) or (q == '"' and re.search(r"\$\(|`", cmd[i:j])):
+                break
+            out.append(cmd[i:j + 1])
+            i, start = j + 1, False
+            continue
+        out.append(c)
+        if c == "(":
+            subst.append(cmd[i - 1:i] in ("$", "<", ">"))
+            start = True
+        elif c == ")":  # the end of $(...) is still inside a word
+            start = not (subst and subst.pop())
+        else:
+            start = c in " \t\n;&|<>"
+        i += 1
+    return "".join(out) + cmd[i:]
+
+
+def commands(cmd):
+    """cmd split at unquoted ; & | newline ( ) { }, keeping $(...), ${...},
+    and backticks whole: roughly its simple commands."""
+    parts, cur, i = [], [], 0
+    while i < len(cmd):
+        c, j = cmd[i], i + 1
+        if c == "\\":
+            j = i + 2
+        elif c in "'\"`":
+            while j < len(cmd) and cmd[j] != c:
+                j += 2 if c != "'" and cmd[j] == "\\" else 1
+            j += 1
+        elif c == "$" and cmd[i + 1:i + 2] in ("(", "{"):
+            depth, j = 0, i + 1
+            while j < len(cmd):
+                depth += {"(": 1, "{": 1, ")": -1, "}": -1}.get(cmd[j], 0)
+                j += 1
+                if depth == 0:
+                    break
+        elif c in ";&|\n(){}":
+            parts.append("".join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(cmd[i:j])
+        i = j
+    return parts + ["".join(cur)]
+
+
+def gh_expansion(cmd):
+    """A gh command whose command or subcommand word is entirely an expansion
+    (gh pr $(cat f) 5, gh $a $b 5): it can't be known not to be a merge."""
+    for part in commands(cmd):
+        words = skeleton(part).split()
+        while words and (words[0] in PREFIXES or re.fullmatch(r"\w+=\S*", words[0])):
+            words.pop(0)
+        if words[:1] and words[0].rsplit("/", 1)[-1] == "gh":
+            if words[1:2] == [WILD] or (words[1:2] != ["api"] and words[2:3] == [WILD]):
+                return True
+    return False
+
+
 def names_merge(cmd):
     bare = re.sub(r"\$\{[^}]*\}|\$\w+|[\"'\\`]", "", cmd)
-    if possible_merge(cmd) or possible_merge(bare):
+    if possible_merge(cmd) or possible_merge(bare) or gh_expansion(cmd):
         return True
     words = [w for w in re.split(r"[\s;&|()<>{}]+", skeleton(cmd)) if w]
     gh = any(could_be(w.rsplit("/", 1)[-1], "gh") for w in words)
@@ -140,7 +237,9 @@ def api_without_merge(words):
     return True
 
 
-def inert(words):
+def inert(words, cmd):
+    if words[:1] == ["rg"] or words[:2] == ["git", "grep"]:
+        return not RUNS_PROGRAM.search(cmd)
     if not words or words[0] in INERT:
         return True
     if words[0] == "git":
@@ -171,7 +270,7 @@ def only_quoted_text(cmd):
     masked = re.sub(r"\d?>\s*(?:&\d|/dev/null)(?=\s|$|[;&|])", " ", "".join(masked))
     if re.search(r"[$`\\<>(){}]|(?<!&)&(?!&)", masked):
         return False
-    return all(inert(s.split()) for s in re.split(r"&&|\|\|?|;|\n", masked))
+    return all(inert(s.split(), cmd) for s in re.split(r"&&|\|\|?|;|\n", masked))
 
 
 def refuse(text):
@@ -195,19 +294,39 @@ except ValueError:
     data = None
 tool_input = data.get("tool_input") if isinstance(data, dict) else None
 cmd = tool_input.get("command") if isinstance(tool_input, dict) else None
-if cmd is None:
+if not isinstance(cmd, str):
     tool = data.get("tool_name") if isinstance(data, dict) else None
-    if isinstance(tool, str) and tool not in ("", "Bash"):
+    if cmd is None and isinstance(tool, str) and tool not in ("", "Bash"):
         sys.exit(0)  # another tool, nothing to run
+    if not listed:
+        if "gh pr merge" not in payload:  # noqa: F821
+            sys.exit(0)
+        refuse("the hook input mentions gh pr merge but isn't one JSON object "
+               "with a string tool_input.command, so pr-merge-gate can't check it.")
+    if cmd is not None:
+        noncanonical("the command is not a single string")
     refuse("PR_MERGE_GATE_PROTECTED_BASES is set, and the hook input isn't one "
            "JSON object with a string tool_input.command, so pr-merge-gate "
            "can't check it for a merge.")
-if not isinstance(cmd, str):
-    noncanonical("the command is not a single string")
-if not names_merge(cmd) or only_quoted_text(cmd):
-    sys.exit(0)
+text = strip_comments(cmd)
 if not listed:
-    sys.exit(4)  # no list, no strict form: the shell below checks the merge
+    # No strict form. Every merge is checked unless each program can't run it.
+    joined = text.replace("\\\n", "")
+    if gh_expansion(text):
+        refuse("this gh command spells its command or subcommand with an "
+               "expansion ($x, $(...), or backticks), so pr-merge-gate can't tell "
+               "whether it merges, and refuses it. Write the gh subcommand out.")
+    if not MERGE.search(joined) or only_quoted_text(text):
+        sys.exit(0)
+    if len(MERGE.findall(joined)) > 1:
+        refuse("this command has more than one gh pr merge (counting any in quoted "
+               "text), and pr-merge-gate checks one merge per command, so it is "
+               "refused. Run each merge as its own command: gh pr merge <number> "
+               "-R <owner>/<repo> --match-head-commit <head sha> [flags]")
+    sys.stdout.buffer.write(text.encode())
+    sys.exit(4)  # the shell below checks the merge
+if not names_merge(cmd) or only_quoted_text(text):
+    sys.exit(0)
 if invalid:
     refuse(f"PR_MERGE_GATE_PROTECTED_BASES lists {invalid[0]!r}, which git "
            "doesn't allow as a branch name, so the gate refuses every merge. "
@@ -263,33 +382,49 @@ while rest:
     noncanonical(f"{word!r} is not an allowed flag here")
 # The one checked form: the shell below checks the PR's facts, and that
 # --match-head-commit is present and names the head it read.
+sys.stdout.buffer.write(cmd.encode())
 sys.exit(3)
 PY
     printf '\0%s' "$input"
-  } | python3 -I -c 'import sys
+  } | python3 -I -S -c 'import sys
 code, _, payload = sys.stdin.buffer.read().decode("utf-8", "replace").partition("\0")
 exec(code)'
 }
-if [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
-  # Every command goes to Python, which reads the command field itself: a
-  # text filter on the raw JSON can't soundly tell which commands to skip.
-  command -v python3 >/dev/null 2>&1 || {
-    echo "BLOCKED: PR_MERGE_GATE_PROTECTED_BASES is set but python3 is missing, so pr-merge-gate can't check this command for a merge." >&2
-    exit 2
-  }
-  formcheck
-  status=$?
-  [ $status -eq 3 ] && canonical=1
-  [ $status -eq 0 ] || [ -n "$canonical" ] || exit 2
-fi
 block() { printf 'BLOCKED: %s\n' "$*" >&2; exit 2; }
+# Every command goes to Python, which reads the command field itself: a text
+# filter on the raw JSON can't soundly tell which commands to skip. merge=1
+# once it has found a merge to check; cmd is then the command without comments.
+merge=""; cmd=""
+if command -v python3 >/dev/null 2>&1; then
+  cmd=$(formcheck)
+  case $? in
+    0) exit 0 ;;
+    2) exit 2 ;;
+    3) canonical=1; merge=1 ;;
+    4) merge=1 ;;
+    *) [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ] && exit 2 ;;
+  esac
+elif [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
+  block "PR_MERGE_GATE_PROTECTED_BASES is set but python3 is missing, so pr-merge-gate can't check this command for a merge."
+fi
 if ! command -v jq >/dev/null 2>&1; then
   [ -n "$canonical" ] && block "jq is missing, so pr-merge-gate can't read this merge's PR. Install jq, then retry."
+  [ -n "$merge" ] && block "jq is missing, so pr-merge-gate can't check this merge. Install jq, then retry."
   case "$input" in *"gh pr merge"*) block "jq is missing, so pr-merge-gate can't check this command for a merge. Install jq, then retry." ;; esac
   exit 0
 fi
-cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
-case "$cmd" in *"gh pr merge"*) ;; *) [ -n "$canonical" ] || exit 0 ;; esac
+# jq sources $HOME/.jq into every program; with HOME=/dev/null no such file
+# can exist, so a definition there can't change these filters.
+jq() { env HOME=/dev/null jq "$@"; }
+if [ -z "$merge" ]; then
+  # Python is missing or failed: the literal words decide.
+  cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+  case "$cmd" in
+    *"gh pr merge"*"gh pr merge"*) block "this command has more than one gh pr merge, and pr-merge-gate checks one merge per command, so it is refused. Run each merge as its own command." ;;
+    *"gh pr merge"*) ;;
+    *) exit 0 ;;
+  esac
+fi
 
 # Tokenize with shell rules and parse the merge command up to the next
 # separator, redirection, newline, or comment: PR number/url (first bare arg),
@@ -300,15 +435,13 @@ case "$cmd" in *"gh pr merge"*) ;; *) [ -n "$canonical" ] || exit 0 ;; esac
 # number before a redirect (2>&1) is dropped so it isn't read as the PR. When
 # the words only appear inside one quoted word (bash -c "gh pr merge 7"), that
 # word is parsed as a command and nested=1; none=1 if no merge is found there.
-# run=1 when such a word is handed to something that executes it: a shell or
-# eval in its pipeline, or a command substitution in the word. fixpre and
-# fixpost are the agent's own command split where the head SHA goes to pin it.
+# fixpre and fixpost are the agent's own command split where the head SHA goes
+# to pin it.
 pr=""; repo=""; delete=""; auto=""; safe=""; match=""; nested=""; none=""
-run=""; fixpre=""; fixpost=""
-if out=$(python3 -I -c '
+fixpre=""; fixpost=""
+if out=$(python3 -I -S -c '
 import re, shlex, sys
 p = ";&|()<>\n"
-SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "mksh", "fish", "eval"}
 PIN = "0" * 40
 def lex(c):
     l = shlex.shlex(c, posix=True, punctuation_chars=p)
@@ -321,32 +454,19 @@ def sublex(w):
         return []
 def find(t):
     return next((i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"]), None)
-def stop(x):
-    return set(x) <= set(p) and (x == "&" or bool(re.search(r"[;\n]|&&|\|\|", x)))
-def runs(t, k):
-    if re.search(r"\$\(|`", t[k]):
-        return True
-    a = b = k
-    while a > 0 and not stop(t[a - 1]):
-        a -= 1
-    while b < len(t) and not stop(t[b]):
-        b += 1
-    return any(t[j].rsplit("/", 1)[-1] in SHELLS for j in range(a, b) if j != k)
 def parse(raw):
     c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", raw.replace("\r", "").replace("\\\n", ""))
     t = lex(c)
-    i, nested, run = find(t), "", ""
+    i, nested = find(t), ""
     if i is None:
-        quoted = [k for k, w in enumerate(t) if "gh pr merge" in w]
-        run = "1" if any(runs(t, k) for k in quoted) else ""
-        for k in quoted:
-            if find(sublex(t[k])) is not None:
-                t, nested = sublex(t[k]), "1"
+        for w in t:
+            if re.search(r"\bgh\s+pr\s+merge\b", w) and find(sublex(w)) is not None:
+                t, nested = sublex(w), "1"
                 i = find(t)
                 break
     if i is None:
-        return dict(none="1", run=run)
-    v = dict(pr="", repo="", delete="", auto="", safe="", match="", nested=nested, run=run)
+        return dict(none="1")
+    v = dict(pr="", repo="", delete="", auto="", safe="", match="", nested=nested)
     args = iter(t[i + 3:])
     for a in args:
         if set(a) <= set(p) or a.startswith("#"):
@@ -391,7 +511,7 @@ def fix(raw, v):
             r"--match-head-commit(?:[ \t]+|=)[\x27\"]?([^\s;&|()<>\x27\"]+)", raw)]
     else:
         flag = " --match-head-commit "
-        spots = [(m.end(), m.end()) for m in re.finditer("gh pr merge", raw)]
+        spots = [(m.end(), m.end()) for m in re.finditer(r"\bgh\s+pr\s+merge\b", raw)]
     for a, b in spots:
         pre, post = raw[:a] + flag, raw[b:]
         try:
@@ -431,14 +551,10 @@ if [ -n "$canonical" ] && { [ -n "$none$nested" ] || [ -z "$pr" ] || [ -z "$repo
   block "pr-merge-gate couldn't parse the merge it just checked, so the merge is refused."
 fi
 if [ -n "$none$nested" ] && [ -z "$canonical" ]; then
-  # The words sit inside quoted text. Text that nothing in the command
-  # executes passes unchecked (rg "gh pr merge", a PR body, a commit message).
-  # Text handed to a shell or eval passes only as quoted text for a program
-  # that can't run it; a merge whose PR number can be read is checked; anything
-  # else is refused.
-  [ -n "$run" ] || exit 0
-  formcheck 2>/dev/null && exit 0
-  [ -z "$none" ] && [ -n "$pr" ] || block "this command runs gh pr merge from inside quoted text, and pr-merge-gate can't tell which PR it merges, so it is refused. Run the merge as a plain command: gh pr merge <number> -R <owner>/<repo> --match-head-commit <head sha> [flags]"
+  # The words sit inside quoted text that formcheck found a program might run
+  # (only text for inert programs passed there): a merge whose PR number can
+  # be read is checked, anything else is refused.
+  [ -z "$none" ] && [ -n "$pr" ] || block "this command runs gh pr merge from inside quoted text or another form pr-merge-gate can't read, so it can't tell which PR it merges, and it is refused. Run the merge as a plain command: gh pr merge <number> -R <owner>/<repo> --match-head-commit <head sha> [flags]"
 fi
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] && { cd "$cwd" 2>/dev/null || safe=""; }

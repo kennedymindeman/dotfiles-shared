@@ -217,6 +217,7 @@ class PrMergeGateTests(unittest.TestCase):
         extra=None,
         path=None,
         view_out=None,
+        home=None,
     ):
         # Defaults: every fact holds. extra: optional "cwd" and "description"
         # for the payload, "raw" text sent instead of the JSON payload, or
@@ -245,6 +246,8 @@ class PrMergeGateTests(unittest.TestCase):
             env["PR_MERGE_GATE_PROTECTED_BASES"] = protected
         if view_out is not None:
             env["GH_STUB_VIEW_OUT"] = view_out
+        if home is not None:
+            env["HOME"] = str(home)
         tool_input = {"command": command}
         if "description" in extra:
             # Placed first so its text precedes the command in the JSON.
@@ -306,7 +309,7 @@ class PrMergeGateTests(unittest.TestCase):
                 "gh pr merge 8 --squash",
                 f"gh pr merge 8 -R {REPO} --merge --subject 'x y'",
                 'bash -c "gh pr merge 8 --squash"',
-                'echo "gh pr merge" && gh pr merge 8 --squash',
+                'echo "pr merge" && gh pr merge 8 --squash',
                 "gh pr merge 8 -s 2>&1",
             ],
             "main": [
@@ -573,6 +576,81 @@ class PrMergeGateTests(unittest.TestCase):
                     self.run_hook("ls -la", protected=protected, path=path).returncode,
                     0,
                 )
+
+    def test_jq_ignores_a_home_jq_file(self):
+        # jq sources $HOME/.jq into every program; one that empties select
+        # would hide every failing check from the gate's filters.
+        home = self.dir / "home"
+        home.mkdir()
+        (home / ".jq").write_text("def select(f): empty;\n")
+        version = subprocess.run(["jq", "--version"], capture_output=True, text=True).stdout
+        loaded = subprocess.run(
+            ["jq", "-nc", "[1, 2] | map(select(. > 1))"],
+            env={**os.environ, "HOME": str(home)},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(loaded.stdout.strip(), "[]", f"{version} didn't load $HOME/.jq")
+        for protected in (None, "main"):
+            for facts in (
+                {"runs": runs_page(("ci", "completed", "failure"))},
+                {"statuses": statuses_page(("ci/legacy", "failure"))},
+            ):
+                with self.subTest(protected=protected, facts=facts):
+                    result = self.run_hook(
+                        f"gh pr merge 8 -R {REPO}{PIN}", protected=protected, home=home, **facts
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("that are pending or failed", result.stderr)
+
+    def test_a_comment_is_read_as_bash_reads_it(self):
+        # An unquoted # that starts a word comments out the rest of its line,
+        # quote characters included, so the merge on the next line runs.
+        for quote in ("'", '"'):
+            for flags in ("", " --squash -d"):
+                command = f"echo a #{quote}\ngh pr merge 5 -R o/r{flags} #{quote}"
+                with self.subTest(command=command):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_hook(command, comments="")
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("no blind-review verdict", result.stderr)
+                    self.assertIn("|pr view 5 -R o/r ", self.pr_lookups()[0])
+                    strict = self.run_hook(command, protected="main", comments="")
+                    self.assertEqual(strict.returncode, 2, strict.stderr)
+                    self.assertIn("one merge form the gate checks", strict.stderr)
+        # A # inside quotes or mid-word starts no comment, and a merge that
+        # only appears in a comment never runs.
+        self.log.unlink(missing_ok=True)
+        for command in (
+            "echo a#'\ngh pr merge 5 -R o/r'",
+            "echo '#'\"\ngh pr merge 5 -R o/r\"",
+            "echo hi # gh pr merge 5 -R o/r",
+        ):
+            for protected in (None, "main"):
+                with self.subTest(command=command, protected=protected):
+                    result = self.run_hook(command, protected=protected, comments="")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_gh_with_an_expanded_subcommand_is_refused(self):
+        for command in (
+            "gh pr $(cat sub.txt) 5 -R o/r",
+            "gh $a $b 5",
+            "gh pr `cat sub.txt` 5 -R o/r",
+            'gh pr "${s}" 5',
+        ):
+            with self.subTest(command=command):
+                result = self.run_hook(command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("with an expansion", result.stderr)
+                strict = self.run_hook(command, protected="main")
+                self.assertEqual(strict.returncode, 2, strict.stderr)
+                self.assertIn("one merge form the gate checks", strict.stderr)
+        for command in ("gh pr view $n", "gh api repos/o/r/pulls/$n", 'git commit -m "x; gh $a"'):
+            with self.subTest(command=command):
+                self.assertEqual(self.run_hook(command).returncode, 0)
+        self.assertEqual(self.gh_calls(), [])
 
     def test_threads_past_the_first_page_are_read(self):
         result = self.run_hook(
@@ -905,7 +983,7 @@ class PrMergeGateTests(unittest.TestCase):
     # Empty list: any command containing "gh pr merge" as words is checked.
 
     def test_default_checks_merges_in_any_form(self):
-        for command in (f"gh pr merge 7{PIN}", f"gh pr merge 7{PIN} && gh pr merge 8"):
+        for command in (f"gh pr merge 7{PIN}", f"gh  pr\tmerge 7{PIN}"):
             for protected in (None, ""):
                 with self.subTest(command=command, protected=protected):
                     self.assertEqual(
@@ -937,21 +1015,73 @@ class PrMergeGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn("inside quoted text", result.stderr)
 
+    def test_default_checks_what_any_program_could_run(self):
+        # A merge in text for any program that isn't on the inert list is
+        # checked, whatever runs it: no list of shells decides.
+        for command in (
+            'ssh host "gh pr merge 12 --squash{}"',
+            'powershell -Command "gh pr merge 12 --squash{}"',
+            'bash.exe -c "gh pr merge 12 --squash{}"',
+            'eval "gh pr merge 12 --squash{}"',
+            'bash <<< "gh pr merge 12 --squash{}"',
+            "sh <<'EOF'\ngh pr merge 12 --squash{}\nEOF",
+            'echo "$(gh pr merge 12 --squash{})"',
+            "echo 'gh pr merge 12 --squash{}' | sh",
+        ):
+            with self.subTest(command=command):
+                self.log.unlink(missing_ok=True)
+                refused = self.run_hook(command.format(PIN), comments="")
+                self.assertEqual(refused.returncode, 2, refused.stderr)
+                self.assertIn("no blind-review verdict", refused.stderr)
+                self.assertIn("|pr view 12 ", self.pr_lookups()[0])
+                ok = self.run_hook(command.format(PIN))
+                self.assertEqual(ok.returncode, 0, ok.stderr)
+        # No merge it can read: refused before any lookup.
+        self.log.unlink(missing_ok=True)
+        for command in (
+            "python3 -c \"import os; os.system('gh pr merge 6 --squash')\"",
+            'm="gh pr merge 7 --squash"; $m',
+            "echo `gh pr merge 7 --squash`",
+            'cat notes.md | grep "gh pr merge" | sh',
+            'rg --pre sh "gh pr merge" notes/',
+        ):
+            with self.subTest(command=command):
+                result = self.run_hook(command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("can't tell which PR", result.stderr)
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_default_refuses_more_than_one_merge(self):
+        # Every merge must meet the conditions, so a command with a second one
+        # is refused even when the first is valid, and no fix is printed.
+        for command in (
+            f"gh pr merge 7{PIN} && gh pr merge 8",
+            f"gh pr merge 7{PIN}; bash -c 'gh pr merge 8'",
+            f'echo "gh pr merge 9" && gh pr merge 7{PIN}',
+        ):
+            with self.subTest(command=command):
+                result = self.run_hook(command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("more than one gh pr merge", result.stderr)
+                self.assertNotIn("--match-head-commit " + SHA, result.stderr)
+        self.assertEqual(self.gh_calls(), [])
+
     def test_default_passes_text_nothing_executes(self):
-        # Without the list, a merge mentioned in an argument to a program that
-        # can't run it isn't checked; the strict form still refuses these.
+        # A merge mentioned only as text for inert programs isn't checked, in
+        # either mode: both use the same inert list.
         for command in (
             'rg "gh pr merge" dir/',
+            'rg "gh pr merge" --type sh',
             'git grep "gh pr merge"',
             'cat notes.md | grep "gh pr merge"',
             'gh pr edit 12 --body "After review: gh pr merge 12 --squash"',
+            'git commit -m "don\'t gh pr merge 7 yet"',
+            'echo "it\'s fine to gh pr merge later"',
         ):
-            with self.subTest(command=command):
-                result = self.run_hook(command, comments="")
-                self.assertEqual(result.returncode, 0, result.stderr)
-                strict = self.run_hook(command, protected="main")
-                self.assertEqual(strict.returncode, 2, strict.stderr)
-                self.assertIn("one merge form the gate checks", strict.stderr)
+            for protected in (None, "main"):
+                with self.subTest(command=command, protected=protected):
+                    result = self.run_hook(command, protected=protected, comments="")
+                    self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.gh_calls(), [])
 
     def test_default_ignores_other_commands(self):
