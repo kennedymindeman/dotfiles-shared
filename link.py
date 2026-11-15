@@ -413,7 +413,7 @@ def configured_files(repo, platform, profile="shared"):
 def overlay_rules(overlay, name):
     """Return an optional overlay rules file, prefixed with a blank line."""
     path = overlay / "agents" / name if overlay else None
-    return "\n" + path.read_text() if path and path.is_file() else ""
+    return "\n" + path.read_text(encoding="utf-8") if path and path.is_file() else ""
 
 
 def check_home_integrations(installer, powershell_profile=None):
@@ -436,7 +436,7 @@ def check_home_integrations(installer, powershell_profile=None):
         if not leaving_home or not path.exists():
             continue
         config = (
-            tomllib.loads(path.read_text())
+            tomllib.loads(path.read_text(encoding="utf-8"))
             if path.suffix == ".toml"
             else read_json(path)
         )
@@ -507,7 +507,7 @@ def plan(
     if (
         profile == "work"
         and previous.exists()
-        and previous.read_text().strip() == "home"
+        and previous.read_text(encoding="utf-8").strip() == "home"
         and not installer.state_path.exists()
     ):
         raise ValueError(
@@ -523,9 +523,9 @@ def plan(
             str(overlay / f"gitconfig.{profile}").replace(chr(92), "/")
         )
     installer.block(".gitconfig", git, legacy_source="gitconfig")
-    rules = (repo / "agents/core.md").read_text()
+    rules = (repo / "agents/core.md").read_text(encoding="utf-8")
     if profile == "work":
-        rules += "\n" + (repo / "agents/work.md").read_text()
+        rules += "\n" + (repo / "agents/work.md").read_text(encoding="utf-8")
     rules += overlay_rules(overlay, f"{profile}.md")
     for relative in ("AGENTS.md", ".codex/AGENTS.md"):
         installer.block(relative, rules, markdown=True)
@@ -535,7 +535,7 @@ def plan(
     installer.block(".claude/CLAUDE.md", claude_rules, markdown=True)
     installer.block(
         ".copilot/copilot-instructions.md",
-        (repo / "copilot/copilot-instructions.md").read_text() + "\n" + rules,
+        (repo / "copilot/copilot-instructions.md").read_text(encoding="utf-8") + "\n" + rules,
         markdown=True,
     )
 
