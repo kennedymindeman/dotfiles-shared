@@ -1,7 +1,8 @@
 #!/bin/sh
 # PreToolUse hook (matcher: Bash). Blocks `gh pr merge` while the PR has
 # unresolved review threads, so Copilot/human comments get a reply and a
-# resolve before the merge lands. With --delete-branch it also removes a clean
+# resolve before the merge lands; a merge it can't check (no jq, gh failing,
+# over 100 threads) is blocked too. With --delete-branch it also removes a clean
 # linked worktree holding the head branch, since gh can't delete a branch that
 # is checked out (dotfiles#125). Exit 2 = block; anything else = allow.
 #
@@ -257,9 +258,15 @@ code, _, payload = sys.stdin.buffer.read().decode("utf-8", "replace").partition(
 exec(code)'
   [ $? -eq 0 ] || exit 2
 fi
-command -v jq >/dev/null 2>&1 || exit 0
+# Without jq the command can't be read out of the JSON, so any payload with
+# the words (JSON escapes \t \n \r count as whitespace) is refused.
+command -v jq >/dev/null 2>&1 || {
+  printf '%s' "$input" | grep -Eq 'gh([[:space:]]|\\[tnr])+pr([[:space:]]|\\[tnr])+merge' || exit 0
+  echo "BLOCKED: pr-merge-gate can't check this merge for unresolved review threads because jq is missing. Install jq, then retry." >&2
+  exit 2
+}
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
-case "$cmd" in *"gh pr merge"*) ;; *) exit 0 ;; esac
+printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+merge' || exit 0
 
 # Tokenize with shell rules and parse the merge command up to the next
 # separator, redirection, newline, or comment: PR number/url (first bare arg),
@@ -268,7 +275,9 @@ case "$cmd" in *"gh pr merge"*) ;; *) exit 0 ;; esac
 # for a lone `gh pr merge <number> ...` with exact delete and nothing that moves
 # the cwd, repo, or timing; only then may the hook remove a worktree. A fd
 # number before a redirect (2>&1) is dropped so it isn't read as the PR.
-pr=""; repo=""; delete=""; auto=""; safe=""
+# Exit 3 = the words are never three separate shell words (only quoted text,
+# as in a commit message), so a check that can't run below doesn't block.
+pr=""; repo=""; delete=""; auto=""; safe=""; merge=1
 if out=$(python3 -c '
 import re, shlex, sys
 p = ";&|()<>\n"
@@ -276,7 +285,9 @@ c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", sys.argv[1].replace("\r", "").replace("\
 l = shlex.shlex(c, posix=True, punctuation_chars=p)
 l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
 t = list(l)
-i = next(i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"])
+i = next((i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"]), None)
+if i is None:
+    sys.exit(3)
 v = dict(pr="", repo="", delete="", auto="", safe="")
 args = iter(t[i + 3:])
 for a in args:
@@ -311,9 +322,10 @@ print(" ".join(k + "=" + shlex.quote(x) for k, x in v.items()))
 ' "$cmd" 2>/dev/null); then
   eval "$out"
 else
+  [ $? -eq 3 ] && merge=""
   # Unparseable or no python3: the old word-split extraction for the PR and
   # repo, and treat any delete-looking word anywhere as a possible delete.
-  set -- $(printf '%s' "$cmd" | sed -n 's/.*gh pr merge//p')
+  set -- $(printf '%s' "$cmd" | sed -n 's/.*gh[[:space:]]\{1,\}pr[[:space:]]\{1,\}merge//p')
   while [ $# -gt 0 ]; do
     case "$1" in
       -R|--repo) repo=${2:-}; [ $# -gt 1 ] && shift ;;
@@ -332,7 +344,16 @@ cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 repoflag=""; [ -n "$repo" ] && repoflag="-R $repo"
 # The PR url names the base repo even when the head is a fork.
 info=$(gh pr view ${pr:+"$pr"} $repoflag --json url,headRefName \
-  -q '.url + " " + .headRefName' 2>/dev/null) || exit 0
+  -q '.url + " " + .headRefName' 2>/dev/null) || {
+  [ -n "$merge" ] || exit 0
+  cat >&2 <<MSG
+BLOCKED: pr-merge-gate couldn't look up this PR with
+  gh pr view${pr:+ $pr}${repo:+ -R $repo}
+so it can't check for unresolved review threads. Run that command to see why
+(check \`gh auth status\` and the PR number or repo), fix it, then retry.
+MSG
+  exit 2
+}
 url=${info%% *}; head=${info#* }
 owner=$(printf '%s' "$url" | cut -d/ -f4)
 name=$(printf '%s' "$url" | cut -d/ -f5)
@@ -340,10 +361,29 @@ num=$(printf '%s' "$url" | cut -d/ -f7)
 
 threads=$(gh api graphql -f owner="$owner" -f name="$name" -F num="$num" -f query='
   query($owner:String!,$name:String!,$num:Int!){ repository(owner:$owner,name:$name){
-    pullRequest(number:$num){ reviewThreads(first:100){ nodes{
+    pullRequest(number:$num){ reviewThreads(first:100){ pageInfo{hasNextPage} nodes{
       id isResolved path line comments(first:1){ nodes{ author{login} body url } } } } } } }' \
-  -q '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved|not)
-      | "\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | gsub("\n";" ") | .[:160])"' 2>/dev/null) || threads=""
+  -q '.data.repository.pullRequest.reviewThreads | if .pageInfo.hasNextPage then "MORE"
+      else .nodes[] | select(.isResolved|not)
+      | "\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | gsub("\n";" ") | .[:160])" end' 2>/dev/null) || {
+  threads=""
+  [ -z "$merge" ] || { cat >&2 <<MSG
+BLOCKED: pr-merge-gate couldn't query the review threads of $owner/$name#$num
+(gh api graphql failed: a rate limit, an outage, or auth). Check
+\`gh api rate_limit\` and \`gh auth status\`, wait if the limit is spent, then
+retry the merge.
+MSG
+  exit 2; }
+}
+if [ "$threads" = MORE ]; then
+  threads=""
+  [ -z "$merge" ] || { cat >&2 <<MSG
+BLOCKED: $owner/$name#$num has more than 100 review threads, more than
+pr-merge-gate reads, so it can't confirm they are all resolved. Check every
+thread on $url, then hand the merge to the owner.
+MSG
+  exit 2; }
+fi
 if [ -n "$threads" ]; then
 cat >&2 <<MSG
 BLOCKED: $owner/$name#$num has unresolved review threads. Read each one, then
