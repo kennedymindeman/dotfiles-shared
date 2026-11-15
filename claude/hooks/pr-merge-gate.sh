@@ -8,6 +8,8 @@
 #      line is exactly
 #        Blind review: pass <full 40-character head commit SHA>
 #      A verdict naming an older commit doesn't count.
+# The merge must also carry --match-head-commit <that head SHA>, so GitHub
+# refuses it if the head moves after these checks.
 # If it can't read one of these (gh fails, rate limit, jq missing), it refuses.
 # With --delete-branch it also removes a clean linked worktree holding the
 # head branch, since gh can't delete a branch that is checked out
@@ -20,6 +22,7 @@
 # and merge, `pr merge`, or a gh api merge path, in any spelling the check
 # understands) is refused unless it is exactly
 #   [cd <path> && ] gh pr merge <number> -R <owner>/<repo> [allowed flags]
+# where the allowed flags must include --match-head-commit <head sha>,
 # or it only passes the words as quoted text to a program that can't run them
 # (echo, grep, git commit, gh pr view, ...). Parsing arbitrary shell can't be
 # made complete, so everything else that names a merge is refused, as is any
@@ -29,16 +32,13 @@
 set -uf  # -f: $repoflag and $cmd are word-split below and must not glob
 input=$(cat)
 canonical=""
-if [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
-  # Every command goes to Python, which reads the command field itself: a
-  # text filter on the raw JSON can't soundly tell which commands to skip.
-  command -v python3 >/dev/null 2>&1 || {
-    echo "BLOCKED: PR_MERGE_GATE_PROTECTED_BASES is set but python3 is missing, so pr-merge-gate can't check this command for a merge." >&2
-    exit 2
-  }
-  # The script, a NUL, then the payload, all on stdin: an environment variable
-  # caps the payload's size, and Windows Python can't read another fd.
-  # Exit 0 = not a merge, 3 = the checked merge form, anything else = refused.
+# The form check. The script, a NUL, then the payload, all on stdin: an
+# environment variable caps the payload's size, and Windows Python can't read
+# another fd. -I keeps the working directory and user site-packages off the
+# import path. Exit 0 = not a merge (or only quoted text for an inert
+# program), 3 = the checked merge form, 4 = a merge to check (no list set),
+# anything else = refused.
+formcheck() {
   { cat <<'PY'
 import codecs
 import json
@@ -48,12 +48,14 @@ import shlex
 import sys
 import warnings
 
-protected = [b for b in re.split(r"[\s,;]+", os.environ["PR_MERGE_GATE_PROTECTED_BASES"]) if b]
+listed = os.environ.get("PR_MERGE_GATE_PROTECTED_BASES", "")
+protected = [b for b in re.split(r"[\s,;]+", listed) if b]
 # Names git itself forbids in a ref; one of these means the list is a typo.
 invalid = [b for b in protected
            if b.startswith("-") or re.search(r"[\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{", b)]
-FORM = ("gh pr merge <number> -R <owner>/<repo> [--merge|--squash|--rebase] "
-        "[--delete-branch] [--subject '<text>'] [--body '<text>']")
+FORM = ("gh pr merge <number> -R <owner>/<repo> --match-head-commit <head sha> "
+        "[--merge|--squash|--rebase] [--delete-branch] [--subject '<text>'] "
+        "[--body '<text>']")
 # No --auto: the PR's base can change after auto-merge is armed.
 SWITCHES = {"--merge", "--squash", "--rebase", "--delete-branch"}
 # Expansions, substitutions, and globs: each may stand for any text.
@@ -203,6 +205,8 @@ if not isinstance(cmd, str):
     noncanonical("the command is not a single string")
 if not names_merge(cmd) or only_quoted_text(cmd):
     sys.exit(0)
+if not listed:
+    sys.exit(4)  # no list, no strict form: the shell below checks the merge
 if invalid:
     refuse(f"PR_MERGE_GATE_PROTECTED_BASES lists {invalid[0]!r}, which git "
            "doesn't allow as a branch name, so the gate refuses every merge. "
@@ -233,6 +237,7 @@ if (words[:3] != ["gh", "pr", "merge"] or len(words) < 6
 num, repo, rest = words[3], words[5], words[6:]
 if any(w.startswith(("-R", "--repo")) for w in rest):
     noncanonical("-R may appear only once, as -R <owner>/<repo> after the number")
+pinned = False
 while rest:
     word = rest.pop(0)
     if word in SWITCHES:
@@ -240,13 +245,29 @@ while rest:
     if word in ("--subject", "--body") and rest:
         rest.pop(0)
         continue
+    if word == "--match-head-commit" and rest and not pinned:
+        if not re.fullmatch(r"[0-9a-f]{40}", rest.pop(0)):
+            noncanonical("--match-head-commit takes the full 40-character head SHA in lowercase")
+        pinned = True
+        continue
     noncanonical(f"{word!r} is not an allowed flag here")
-sys.exit(3)  # the one checked form: the shell below checks the PR's facts
+# The one checked form: the shell below checks the PR's facts, and that
+# --match-head-commit is present and names the head it read.
+sys.exit(3)
 PY
     printf '\0%s' "$input"
-  } | python3 -c 'import sys
+  } | python3 -I -c 'import sys
 code, _, payload = sys.stdin.buffer.read().decode("utf-8", "replace").partition("\0")
 exec(code)'
+}
+if [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
+  # Every command goes to Python, which reads the command field itself: a
+  # text filter on the raw JSON can't soundly tell which commands to skip.
+  command -v python3 >/dev/null 2>&1 || {
+    echo "BLOCKED: PR_MERGE_GATE_PROTECTED_BASES is set but python3 is missing, so pr-merge-gate can't check this command for a merge." >&2
+    exit 2
+  }
+  formcheck
   status=$?
   [ $status -eq 3 ] && canonical=1
   [ $status -eq 0 ] || [ -n "$canonical" ] || exit 2
@@ -266,20 +287,31 @@ case "$cmd" in *"gh pr merge"*) ;; *) [ -n "$canonical" ] || exit 0 ;; esac
 # exact -d/--delete-branch and ? for a valued form like -d=false. safe=1 only
 # for a lone `gh pr merge <number> ...` with exact delete and nothing that moves
 # the cwd, repo, or timing; only then may the hook remove a worktree. A fd
-# number before a redirect (2>&1) is dropped so it isn't read as the PR.
-pr=""; repo=""; delete=""; auto=""; safe=""; none=""
-if out=$(python3 -c '
+# number before a redirect (2>&1) is dropped so it isn't read as the PR. When
+# the words only appear inside one quoted word (bash -c "gh pr merge 7"), that
+# word is parsed as a command and nested=1; none=1 if no merge is found there.
+pr=""; repo=""; delete=""; auto=""; safe=""; match=""; nested=""; none=""
+if out=$(python3 -I -c '
 import re, shlex, sys
 p = ";&|()<>\n"
+def lex(c):
+    l = shlex.shlex(c, posix=True, punctuation_chars=p)
+    l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
+    return list(l)
+def find(t):
+    return next((i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"]), None)
 c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", sys.argv[1].replace("\r", "").replace("\\\n", ""))
-l = shlex.shlex(c, posix=True, punctuation_chars=p)
-l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
-t = list(l)
-i = next((i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"]), None)
-if i is None:  # the words only appear inside one quoted word
+t = lex(c)
+i, nested = find(t), ""
+for w in (t if i is None else ()):
+    if "gh pr merge" in w and find(lex(w)) is not None:
+        t, nested = lex(w), "1"
+        i = find(t)
+        break
+if i is None:
     print("none=1")
     sys.exit()
-v = dict(pr="", repo="", delete="", auto="", safe="")
+v = dict(pr="", repo="", delete="", auto="", safe="", match="", nested=nested)
 args = iter(t[i + 3:])
 for a in args:
     if set(a) <= set(p) or a.startswith("#"):
@@ -288,7 +320,11 @@ for a in args:
         v["repo"] = next(args, "")
     elif a.startswith("--repo="):
         v["repo"] = a[7:]
-    elif a in ("--body", "--subject", "--author-email", "--body-file", "--match-head-commit"):
+    elif a == "--match-head-commit":
+        v["match"] = next(args, "")
+    elif a.startswith("--match-head-commit="):
+        v["match"] = a[20:]
+    elif a in ("--body", "--subject", "--author-email", "--body-file"):
         next(args, "")
     elif a.startswith("--delete-branch"):
         v["delete"] = "?" if "=" in a or v["delete"] == "?" else "1"
@@ -305,7 +341,7 @@ for a in args:
                 v["delete"] = "?" if "=" in a or v["delete"] == "?" else "1"
     elif not a.startswith("-") and not v["pr"]:
         v["pr"] = a
-if (i == 0 and v["delete"] == "1" and v["pr"].isdigit() and not v["repo"]
+if (i == 0 and not nested and v["delete"] == "1" and v["pr"].isdigit() and not v["repo"]
         and not v["auto"] and not re.search("[$`]", c)
         and not any(set(x) <= set(p) for x in t)):
     v["safe"] = "1"
@@ -321,6 +357,8 @@ else
     case "$1" in
       -R|--repo) repo=${2:-}; [ $# -gt 1 ] && shift ;;
       --repo=*) repo=${1#--repo=} ;;
+      --match-head-commit) match=${2:-}; [ $# -gt 1 ] && shift ;;
+      --match-head-commit=*) match=${1#--match-head-commit=} ;;
       -*) ;;
       *) [ -z "$pr" ] && pr=$1 ;;
     esac
@@ -330,10 +368,16 @@ else
     case "$w" in --delete-branch*) delete="?" ;; --*) ;; -*d*) delete="?" ;; esac
   done
 fi
-if [ -n "$canonical" ] && { [ -n "$none" ] || [ -z "$pr" ] || [ -z "$repo" ]; }; then
+if [ -n "$canonical" ] && { [ -n "$none$nested" ] || [ -z "$pr" ] || [ -z "$repo" ]; }; then
   block "pr-merge-gate couldn't parse the merge it just checked, so the merge is refused."
 fi
-[ -n "$none" ] && exit 0
+if [ -n "$none$nested" ] && [ -z "$canonical" ]; then
+  # The words sit inside quoted text. Only text handed to a program that can't
+  # run it (echo, grep, git commit, ...) passes unchecked; a merge whose PR
+  # number can be read is checked; anything else is refused.
+  formcheck 2>/dev/null && exit 0
+  [ -z "$none" ] && [ -n "$pr" ] || block "this command runs gh pr merge from inside quoted text, and pr-merge-gate can't tell which PR it merges, so it is refused. Run the merge as a plain command: gh pr merge <number> -R <owner>/<repo> --match-head-commit <head sha> [flags]"
+fi
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] && { cd "$cwd" 2>/dev/null || safe=""; }
 repoflag=""; [ -n "$repo" ] && repoflag="-R $repo"
@@ -348,8 +392,10 @@ url=${info%% *}; head=${info#* }; sha=${head#* }; head=${head%% *}
 owner=$(printf '%s' "$url" | cut -d/ -f4)
 name=$(printf '%s' "$url" | cut -d/ -f5)
 num=$(printf '%s' "$url" | cut -d/ -f7)
-case "$num$sha" in *[!0-9a-f]*) cantread "head commit" "PR ${pr:-for this branch}" "$info" ;; esac
-[ -n "$owner" ] && [ -n "$name" ] && [ -n "$num" ] && [ ${#sha} -ge 40 ] \
+# Spelled-out classes: a range like a-f can match uppercase in some locales.
+case "$num" in *[!0123456789]*) cantread "head commit" "PR ${pr:-for this branch}" "$info" ;; esac
+case "$sha" in *[!0123456789abcdef]*) cantread "head commit" "PR ${pr:-for this branch}" "$info" ;; esac
+[ -n "$owner" ] && [ -n "$name" ] && [ -n "$num" ] && [ ${#sha} -eq 40 ] \
   || cantread "head commit" "PR ${pr:-for this branch}" "$info"
 
 # 1. Checks. With --json, gh prints every check and exits 0, or exits 1 with
@@ -390,7 +436,8 @@ fi
 # the repo's owner, a member, or a collaborator, since anyone can comment on a
 # public repo.
 verdict="Blind review: pass $sha"
-firsts=$(gh api "repos/$owner/$name/issues/$num/comments" --paginate \
+# per_page=100, the maximum, so a long thread costs as few requests as possible.
+firsts=$(gh api "repos/$owner/$name/issues/$num/comments?per_page=100" --paginate \
   -q '.[] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
       | .body | split("\n")[0] | rtrimstr("\r")' 2>&1) \
   || cantread "comments" "$owner/$name#$num" "$firsts"
@@ -400,6 +447,18 @@ owner, a member, or a collaborator) whose first line is exactly:
   $verdict
 for example: gh pr comment $num -R $owner/$name --body-file <file>
 A verdict for an older commit doesn't count: a new commit needs a new review."
+
+# 4. Pin the merge to the head checked above: with --match-head-commit, GitHub
+# refuses the merge if the head moves after this check.
+if [ "$match" != "$sha" ]; then
+  if [ -n "$canonical" ]; then fix="$cmd --match-head-commit $sha"
+  else fix="gh pr merge $num -R $owner/$name --match-head-commit $sha (plus your other flags)"
+  fi
+  [ -z "$match" ] && block "this merge of $owner/$name#$num doesn't pin the head commit the gate checked. Run it with --match-head-commit, so GitHub refuses the merge if the head moves:
+  $fix"
+  block "this merge of $owner/$name#$num pins --match-head-commit $match, but the PR's head is $sha. Pin the head the gate checked:
+  --match-head-commit $sha"
+fi
 
 # Under the gate the only merge allowed names its repo with -R, and gh never
 # deletes a local branch then, so no worktree stands in its way: never touch one.

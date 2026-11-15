@@ -149,6 +149,10 @@ def main():
                 reasons["checks pending or failed"] += 1
             elif "blind-review verdict" in first:
                 reasons["no blind-review verdict"] += 1
+            elif "head commit the gate checked" in first or "pins --match-head-commit" in first:
+                reasons["merge not pinned to the checked head"] += 1
+            elif "inside quoted text" in first:
+                reasons["merge inside quoted text, no PR number"] += 1
             else:
                 reasons["unresolved review threads"] += 1
     shutil.rmtree(scratch)

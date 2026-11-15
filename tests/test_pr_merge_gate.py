@@ -18,10 +18,12 @@ REPO = "example-org/example-repo"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 OLD_SHA = "fedcba9876543210fedcba9876543210fedcba98"
 VERDICT = f"Blind review: pass {SHA}"
+PIN = f" --match-head-commit {SHA}"
 
 # Stands in for gh, printing what gh's -q filter would. Logs "<cwd>|<args>"
 # per call. Each GH_STUB_* fact set to FAIL makes that lookup exit 1.
-# `pr view` answers "<url><N> feature <head sha>", `pr checks` the non-passing
+# `pr view` answers "<url><N> feature <head sha>" (or GH_STUB_VIEW_OUT verbatim
+# when that is set), `pr checks` the non-passing
 # checks (exit GH_STUB_CHECKS_RC), `api graphql` the unresolved threads, and
 # `api repos/...` the comments' first lines. GH_STUB_THREADS_PAGE2 reaches only
 # a caller that paginates on $endCursor.
@@ -32,6 +34,7 @@ printf '\\035' >> "$GH_STUB_ARGS"
 case "$1 $2" in
   "pr view")
     [ "$GH_STUB_VIEW" = FAIL ] && { echo "no pull requests found" >&2; exit 1; }
+    [ -n "${GH_STUB_VIEW_OUT+set}" ] && { printf '%s' "$GH_STUB_VIEW_OUT"; exit 0; }
     sel=$3; case "$sel" in ''|-*|*[!0-9]*) sel=7 ;; esac
     printf '%s%s feature %s\\n' "$GH_STUB_URL" "$sel" "$GH_STUB_SHA" ;;
   "pr checks")
@@ -82,6 +85,11 @@ BYPASSES = {
     "two cds": f"cd /tmp && cd / && gh pr merge 8 -R {REPO}",
     "heredoc with apostrophe": "cat <<'EOF'\nit's gh's merge text\nEOF",
     "git merge next to gh": "git merge origin/main && gh pr checks 8",
+    "pin with = value": f"gh pr merge 8 -R {REPO} --match-head-commit={SHA}",
+    "short pin": f"gh pr merge 8 -R {REPO} --match-head-commit {SHA[:12]}",
+    "uppercase pin": f"gh pr merge 8 -R {REPO} --match-head-commit {SHA.upper()}",
+    "two pins": f"gh pr merge 8 -R {REPO}{PIN} --match-head-commit {OLD_SHA}",
+    "pin missing value": f"gh pr merge 8 -R {REPO} --match-head-commit",
 }
 
 # Final red-team cases. Each runs through the hook and, if allowed, through
@@ -138,12 +146,12 @@ HARMLESS = [
 ]
 
 CANONICAL = [
-    f"gh pr merge 8 -R {REPO}",
-    f"gh pr merge 8 -R {REPO} --merge --delete-branch",
-    f"gh pr merge 8 -R {REPO} --squash --subject 'Ship it, #12 now' --body \"a b\"",
-    f"cd /tmp && gh pr merge 8 -R {REPO} --rebase",
-    f"cd 'a dir' && gh pr merge 8 -R {REPO} --subject '#1 fix'",
-    f"gh  pr\tmerge 8 -R {REPO}",
+    f"gh pr merge 8 -R {REPO}{PIN}",
+    f"gh pr merge 8 -R {REPO} --merge --delete-branch{PIN}",
+    f"gh pr merge 8 -R {REPO}{PIN} --squash --subject 'Ship it, #12 now' --body \"a b\"",
+    f"cd /tmp && gh pr merge 8 -R {REPO} --rebase{PIN}",
+    f"cd 'a dir' && gh pr merge 8 -R {REPO} --subject '#1 fix'{PIN}",
+    f"gh  pr\tmerge 8 -R {REPO}{PIN}",
 ]
 
 
@@ -173,9 +181,12 @@ class PrMergeGateTests(unittest.TestCase):
         comments=VERDICT,
         extra=None,
         path=None,
+        view_out=None,
     ):
         # Defaults: every fact holds. extra: optional "cwd" and "description"
-        # for the payload, or "raw" text sent instead of the JSON payload.
+        # for the payload, "raw" text sent instead of the JSON payload, or
+        # "proc_cwd", the directory the hook process itself starts in.
+        # view_out: the exact text `gh pr view` prints.
         extra = extra or {}
         env = {
             **os.environ,
@@ -191,10 +202,12 @@ class PrMergeGateTests(unittest.TestCase):
             "GH_STUB_THREADS_PAGE2": threads_page2,
             "GH_STUB_COMMENTS": comments,
         }
-        for key in ("PR_MERGE_GATE_PROTECTED_BASES", "GH_REPO"):
+        for key in ("PR_MERGE_GATE_PROTECTED_BASES", "GH_REPO", "GH_STUB_VIEW_OUT"):
             env.pop(key, None)
         if protected is not None:
             env["PR_MERGE_GATE_PROTECTED_BASES"] = protected
+        if view_out is not None:
+            env["GH_STUB_VIEW_OUT"] = view_out
         tool_input = {"command": command}
         if "description" in extra:
             # Placed first so its text precedes the command in the JSON.
@@ -209,6 +222,7 @@ class PrMergeGateTests(unittest.TestCase):
             [str(HOOK)],
             input=extra.get("raw", json.dumps(payload)),
             env=env,
+            cwd=extra.get("proc_cwd"),
             capture_output=True,
             check=False,
             text=True,
@@ -236,8 +250,30 @@ class PrMergeGateTests(unittest.TestCase):
     def test_all_conditions_hold_allows_a_merge_into_main(self):
         for protected in (None, "main"):
             with self.subTest(protected=protected):
-                result = self.run_hook(f"gh pr merge 8 -R {REPO}", protected=protected)
+                result = self.run_hook(f"gh pr merge 8 -R {REPO}{PIN}", protected=protected)
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_merge_must_pin_the_checked_head(self):
+        for protected in (None, "main"):
+            with self.subTest(protected=protected):
+                missing = self.run_hook(f"gh pr merge 8 -R {REPO}", protected=protected)
+                self.assertEqual(missing.returncode, 2, missing.stderr)
+                self.assertIn("doesn't pin the head commit", missing.stderr)
+                self.assertIn(f"--match-head-commit {SHA}", missing.stderr)
+                stale = self.run_hook(
+                    f"gh pr merge 8 -R {REPO} --match-head-commit {OLD_SHA}",
+                    protected=protected,
+                )
+                self.assertEqual(stale.returncode, 2, stale.stderr)
+                self.assertIn(f"pins --match-head-commit {OLD_SHA}", stale.stderr)
+                self.assertIn(f"\n  --match-head-commit {SHA}\n", stale.stderr)
+        # The refusal prints the exact command to run.
+        strict = self.run_hook(f"cd /tmp && gh pr merge 8 -R {REPO} --squash", protected="main")
+        self.assertIn(f"\n  cd /tmp && gh pr merge 8 -R {REPO} --squash{PIN}\n", strict.stderr)
+        loose = self.run_hook("gh pr merge 8 --squash")
+        self.assertIn(f"\n  gh pr merge 8 -R {REPO}{PIN} (plus your other flags)\n", loose.stderr)
+        ok = self.run_hook(f"gh pr merge 8 --squash --match-head-commit={SHA}")
+        self.assertEqual(ok.returncode, 0, ok.stderr)
 
     def test_each_condition_failing_alone_is_refused(self):
         cases = {
@@ -283,14 +319,14 @@ class PrMergeGateTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("no blind-review verdict", result.stderr)
         result = self.run_hook(
-            f"gh pr merge 8 -R {REPO}",
+            f"gh pr merge 8 -R {REPO}{PIN}",
             comments=f"Blind review: pass {OLD_SHA}\nnote\n{VERDICT}\n",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_no_checks_at_all_passes(self):
         result = self.run_hook(
-            f"gh pr merge 8 -R {REPO}",
+            f"gh pr merge 8 -R {REPO}{PIN}",
             protected="main",
             checks="no checks reported on the 'feature' branch\n",
             checks_rc=1,
@@ -320,6 +356,47 @@ class PrMergeGateTests(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIn(why, result.stderr)
+
+    def test_malformed_pr_lookup_is_refused(self):
+        cases = {
+            "empty": "",
+            "missing sha": f"{URL}8 feature\n",
+            "short sha": f"{URL}8 feature {SHA[:39]}\n",
+            "long sha": f"{URL}8 feature {SHA}0\n",
+            "null": "null\n",
+            "null sha": f"{URL}8 feature null\n",
+            "uppercase sha": f"{URL}8 feature {SHA.upper()}\n",
+            "non-numeric number": f"{URL}ab feature {SHA}\n",
+        }
+        for protected in (None, "main"):
+            for name, out in cases.items():
+                with self.subTest(protected=protected, case=name):
+                    result = self.run_hook(
+                        f"gh pr merge 8 -R {REPO}{PIN}", protected=protected, view_out=out
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("couldn't read the head commit", result.stderr)
+
+    def test_modules_in_the_working_directory_are_not_imported(self):
+        # A shlex.py where the hook starts would, if imported, report "no
+        # merge" and let the unreviewed merge through.
+        start = self.dir / "start"
+        start.mkdir()
+        marker = self.dir / "shadow-ran"
+        (start / "shlex.py").write_text(
+            f"import sys\nopen({str(marker)!r}, 'w').close()\nprint('none=1')\nsys.exit(0)\n"
+        )
+        for protected in (None, "main"):
+            with self.subTest(protected=protected):
+                result = self.run_hook(
+                    f"gh pr merge 8 -R {REPO}{PIN}",
+                    protected=protected,
+                    comments="",
+                    extra={"proc_cwd": start},
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("no blind-review verdict", result.stderr)
+                self.assertFalse(marker.exists(), "the shadowing module ran")
 
     def test_missing_jq_refuses_merges(self):
         tools = self.dir / "tools"
@@ -353,7 +430,7 @@ class PrMergeGateTests(unittest.TestCase):
         for protected in (None, "main", "main release"):
             with self.subTest(protected=protected):
                 self.log.unlink(missing_ok=True)
-                ok = self.run_hook(f"gh pr merge 8 -R {REPO}", protected=protected)
+                ok = self.run_hook(f"gh pr merge 8 -R {REPO}{PIN}", protected=protected)
                 self.assertEqual(ok.returncode, 0, ok.stderr)
                 self.assertFalse(any("baseRefName" in c for c in self.gh_calls()))
                 refused = self.run_hook(
@@ -379,8 +456,10 @@ class PrMergeGateTests(unittest.TestCase):
         query = next(a for a in threads if a.startswith("query="))
         self.assertIn("after:$endCursor", query)
         self.assertIn("pageInfo{ hasNextPage endCursor }", query)
+        # The largest page size, so a long thread costs few requests.
         self.assertEqual(
-            comments[:3], ["api", f"repos/{REPO}/issues/7/comments", "--paginate"]
+            comments[:3],
+            ["api", f"repos/{REPO}/issues/7/comments?per_page=100", "--paginate"],
         )
 
     def test_gh_filters_pick_the_right_facts(self):
@@ -492,7 +571,7 @@ class PrMergeGateTests(unittest.TestCase):
                 )
                 self.assertEqual(unreviewed.returncode, 2, unreviewed.stderr)
                 self.assertIn("no blind-review verdict", unreviewed.stderr)
-                ok = self.run_hook(f"gh pr merge 7 -R {REPO}", protected="main", extra=extra)
+                ok = self.run_hook(f"gh pr merge 7 -R {REPO}{PIN}", protected="main", extra=extra)
                 self.assertEqual(ok.returncode, 0, ok.stderr)
                 harmless = self.run_hook("ls -la", protected="main", extra=extra)
                 self.assertEqual(harmless.returncode, 0, harmless.stderr)
@@ -537,14 +616,14 @@ class PrMergeGateTests(unittest.TestCase):
                 loose = self.run_hook("gh pr merge 8", protected=protected)
                 self.assertEqual(loose.returncode, 2, loose.stderr)
                 self.assertIn("one merge form the gate checks", loose.stderr)
-                ok = self.run_hook(f"gh pr merge 8 -R {REPO}", protected=protected)
+                ok = self.run_hook(f"gh pr merge 8 -R {REPO}{PIN}", protected=protected)
                 self.assertEqual(ok.returncode, 0, ok.stderr)
 
     def test_list_keeps_names_git_allows(self):
         for name in ("release+2", "user@host", "fix#12"):
             for protected in (f"main {name}", f"main,{name}", f"{name};main"):
                 with self.subTest(protected=protected):
-                    result = self.run_hook(f"gh pr merge 8 -R {REPO}", protected=protected)
+                    result = self.run_hook(f"gh pr merge 8 -R {REPO}{PIN}", protected=protected)
                     self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_list_without_branch_names_fails_closed(self):
@@ -654,7 +733,7 @@ class PrMergeGateTests(unittest.TestCase):
     # Empty list: any command containing "gh pr merge" as words is checked.
 
     def test_default_checks_merges_in_any_form(self):
-        for command in ("gh pr merge 7", "gh pr merge 7 && gh pr merge 8"):
+        for command in (f"gh pr merge 7{PIN}", f"gh pr merge 7{PIN} && gh pr merge 8"):
             for protected in (None, ""):
                 with self.subTest(command=command, protected=protected):
                     self.assertEqual(
@@ -662,8 +741,29 @@ class PrMergeGateTests(unittest.TestCase):
                     )
                     refused = self.run_hook(command, protected=protected, comments="")
                     self.assertEqual(refused.returncode, 2)
-        # Quoted text handed to sh isn't parsed; the strict form refuses it.
-        self.assertEqual(self.run_hook(BYPASSES["pipe to sh"], comments="").returncode, 0)
+
+    def test_default_checks_merges_inside_quoted_shell(self):
+        # A merge inside quoted text for a shell is checked, never skipped.
+        for command in (
+            'bash -c "gh pr merge 7 --squash{}"',
+            "echo 'gh pr merge 7 -R o/r{}' | sh",
+            "sh -c 'gh pr merge 7 -d{}' && echo done",
+        ):
+            with self.subTest(command=command):
+                self.log.unlink(missing_ok=True)
+                refused = self.run_hook(command.format(PIN), comments="")
+                self.assertEqual(refused.returncode, 2, refused.stderr)
+                self.assertIn("no blind-review verdict", refused.stderr)
+                self.assertIn("|pr view 7 ", self.pr_lookups()[0])
+                unpinned = self.run_hook(command.format(""))
+                self.assertEqual(unpinned.returncode, 2, unpinned.stderr)
+                self.assertIn("doesn't pin the head commit", unpinned.stderr)
+                ok = self.run_hook(command.format(PIN))
+                self.assertEqual(ok.returncode, 0, ok.stderr)
+        # No PR number to read: refused rather than passed.
+        result = self.run_hook("bash -c 'gh pr merge --squash'")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("inside quoted text", result.stderr)
 
     def test_default_ignores_other_commands(self):
         self.assertEqual(self.run_hook("gh pr view 7").returncode, 0)
@@ -726,6 +826,13 @@ class WorktreeCleanupTests(unittest.TestCase):
         ).stdout
 
     def hook(self, command="gh pr merge 1 --squash --delete-branch", cwd=None):
+        # Every merge here pins the fake's head, so only the worktree decides:
+        # right after `gh pr merge` without the list, at the end under it,
+        # where the strict form wants the number and -R first.
+        if self.env.get("PR_MERGE_GATE_PROTECTED_BASES"):
+            command += PIN
+        else:
+            command = command.replace("gh pr merge", "gh pr merge" + PIN, 1)
         payload = {"tool_input": {"command": command}, "cwd": str(cwd or self.main)}
         return subprocess.run(
             ["sh", str(HOOK)],
