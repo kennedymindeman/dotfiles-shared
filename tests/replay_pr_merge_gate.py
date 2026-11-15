@@ -1,17 +1,17 @@
 """Replay real Bash calls from Claude Code transcripts through pr-merge-gate.sh.
 
-  python3 tests/replay_pr_merge_gate.py [--days 7] [--protected main]
+  python3 tests/replay_pr_merge_gate.py [--days 7]
 
 Reads ~/.claude/projects/**/*.jsonl, keeps Bash calls from the last --days, and
-runs each through the hook with PR_MERGE_GATE_PROTECTED_BASES set to
---protected. The hook runs in a throwaway directory with a fake git that does
-nothing and a fake gh that passes only `gh pr view` to the real gh, so a replay
-can't remove a worktree or write to GitHub. Lookups query GitHub read-only for
+runs each through the hook. The hook runs in a throwaway directory with a fake
+git that does nothing and a fake gh that passes only `gh pr view` to the real
+gh, so a replay can't change a checkout or write to GitHub. Lookups query GitHub read-only for
 each PR's current state, so verdicts reflect today's PRs, not the day of the
-call. Unresolved review threads aren't looked up. Prints how many calls it
+call. Checks, review threads, and blind-review verdicts aren't looked up, so a
+merge that passes the form is counted as "lookup failed: check runs". Prints how many calls it
 would block, the top reasons, and hook latency. For real `gh pr merge` calls
 refused only for their form, it also looks up where they merged, to show how
-many merges into unprotected bases the canonical form would now refuse.
+many real merges the canonical form would now refuse.
 """
 
 import argparse
@@ -103,17 +103,12 @@ def fake_tools():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=7)
-    parser.add_argument("--protected", default="main")
     args = parser.parse_args()
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
         days=args.days
     )
     scratch = fake_tools()
-    env = {
-        **os.environ,
-        "PATH": f"{scratch}{os.pathsep}{os.environ['PATH']}",
-        "PR_MERGE_GATE_PROTECTED_BASES": args.protected,
-    }
+    env = {**os.environ, "PATH": f"{scratch}{os.pathsep}{os.environ['PATH']}"}
     reasons = collections.Counter()
     timings = {"merge": [], "other": []}
     total = 0
@@ -142,10 +137,14 @@ def main():
                     reasons["form: gh pr merge, " + merge_base(merge, cwd)] += 1
                 else:
                     reasons["form: mentions gh and merge, not a merge"] += 1
-            elif "couldn't read the base branch" in first:
-                reasons["base lookup failed"] += 1
-            elif "protected base" in first:
-                reasons["protected base: " + first.split(" merges into ")[1].split(",")[0]] += 1
+            elif "couldn't read the" in first:
+                reasons["lookup failed: " + first.split("couldn't read the ")[1].split(" of ")[0]] += 1
+            elif "pending or failed" in first:
+                reasons["checks pending or failed"] += 1
+            elif "blind-review verdict" in first:
+                reasons["no blind-review verdict"] += 1
+            elif "head commit the gate checked" in first or "pins --match-head-commit" in first:
+                reasons["merge not pinned to the checked head"] += 1
             else:
                 reasons["unresolved review threads"] += 1
     shutil.rmtree(scratch)
