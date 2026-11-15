@@ -378,13 +378,17 @@ class PrMergeGateTests(unittest.TestCase):
                     self.assertIn("couldn't read the head commit", result.stderr)
 
     def test_modules_in_the_working_directory_are_not_imported(self):
-        # A shlex.py where the hook starts would, if imported, report "no
-        # merge" and let the unreviewed merge through.
+        # The hook runs in the session's checkout; a json.py or shlex.py there
+        # must not replace the standard-library module the gate's Python
+        # imports. The planted shlex.py would, if imported, report "no merge"
+        # and let the unreviewed merge through.
         start = self.dir / "start"
         start.mkdir()
         marker = self.dir / "shadow-ran"
+        (start / "json.py").write_text(f"open({str(marker)!r}, 'a').write('json')\n")
         (start / "shlex.py").write_text(
-            f"import sys\nopen({str(marker)!r}, 'w').close()\nprint('none=1')\nsys.exit(0)\n"
+            f"import sys\nopen({str(marker)!r}, 'a').write('shlex')\n"
+            "print('none=1')\nsys.exit(0)\n"
         )
         for protected in (None, "main"):
             with self.subTest(protected=protected):
@@ -392,11 +396,11 @@ class PrMergeGateTests(unittest.TestCase):
                     f"gh pr merge 8 -R {REPO}{PIN}",
                     protected=protected,
                     comments="",
-                    extra={"proc_cwd": start},
+                    extra={"cwd": start, "proc_cwd": start},
                 )
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("no blind-review verdict", result.stderr)
-                self.assertFalse(marker.exists(), "the shadowing module ran")
+                self.assertFalse(marker.exists(), "a module from the working directory ran")
 
     def test_missing_jq_refuses_merges(self):
         tools = self.dir / "tools"
