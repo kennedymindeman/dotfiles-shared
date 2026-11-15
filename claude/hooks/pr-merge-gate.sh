@@ -1,22 +1,34 @@
 #!/bin/sh
-# PreToolUse hook (matcher: Bash). Blocks `gh pr merge` while the PR has
-# unresolved review threads, so Copilot/human comments get a reply and a
-# resolve before the merge lands. With --delete-branch it also removes a clean
-# linked worktree holding the head branch, since gh can't delete a branch that
-# is checked out (dotfiles#125). Exit 2 = block; anything else = allow.
+# PreToolUse hook (matcher: Bash). Allows a `gh pr merge`, into any base,
+# only when all three hold, and refuses (exit 2) naming the one that failed:
+#   1. no check on the PR's head is pending or failed (no checks at all passes);
+#   2. no review thread is unresolved (every page of threads is read);
+#   3. a blind-review verdict is recorded for the PR's current head commit: a
+#      PR comment by the repo's owner, a member, or a collaborator whose first
+#      line is exactly
+#        Blind review: pass <full 40-character head commit SHA>
+#      A verdict naming an older commit doesn't count.
+# If it can't read one of these (gh fails, rate limit, jq missing), it refuses.
+# With --delete-branch it also removes a clean linked worktree holding the
+# head branch, since gh can't delete a branch that is checked out
+# (dotfiles#125). Exit 2 = block; anything else = allow.
 #
-# When PR_MERGE_GATE_PROTECTED_BASES lists base branches (separated by spaces,
-# commas, or semicolons; default empty), merges into them stay with the owner:
-# a command that names a merge (gh and merge, `pr merge`, or a gh api merge
-# path, in any spelling the check understands) is refused unless it is exactly
+# It reads command text, so it catches mistakes, not an agent set on getting
+# around it. When PR_MERGE_GATE_PROTECTED_BASES is set (any non-empty value;
+# it is still read as a list of branch names separated by spaces, commas, or
+# semicolons), the command form is strict: a command that names a merge (gh
+# and merge, `pr merge`, or a gh api merge path, in any spelling the check
+# understands) is refused unless it is exactly
 #   [cd <path> && ] gh pr merge <number> -R <owner>/<repo> [allowed flags]
-# and that PR's base is not listed, or it only passes the words as quoted text
-# to a program that can't run them (echo, grep, git commit, gh pr view, ...).
-# Parsing arbitrary shell can't be made complete, so everything else that
-# names a merge is refused, as is any merge when the list names no branch or
-# a name git forbids. Under the list the hook never removes a worktree.
+# or it only passes the words as quoted text to a program that can't run them
+# (echo, grep, git commit, gh pr view, ...). Parsing arbitrary shell can't be
+# made complete, so everything else that names a merge is refused, as is any
+# merge when the list names no branch or a name git forbids. The list no longer
+# keeps any base from agents: the three conditions apply to every base. Under
+# the list the hook never removes a worktree.
 set -uf  # -f: $repoflag and $cmd are word-split below and must not glob
 input=$(cat)
+canonical=""
 if [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
   # Every command goes to Python, which reads the command field itself: a
   # text filter on the raw JSON can't soundly tell which commands to skip.
@@ -26,7 +38,7 @@ if [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
   }
   # The script, a NUL, then the payload, all on stdin: an environment variable
   # caps the payload's size, and Windows Python can't read another fd.
-  # Exit 0 = allow, anything else = refused.
+  # Exit 0 = not a merge, 3 = the checked merge form, anything else = refused.
   { cat <<'PY'
 import codecs
 import json
@@ -229,37 +241,24 @@ while rest:
         rest.pop(0)
         continue
     noncanonical(f"{word!r} is not an allowed flag here")
-
-# -R names the repo, so the lookup doesn't depend on the working directory.
-import subprocess  # noqa: E402  only merges pay for the import
-view = ["gh", "pr", "view", num, "-R", repo, "--json", "baseRefName,url",
-        "-q", '.baseRefName + " " + .url']
-try:
-    result = subprocess.run(view, cwd="/", capture_output=True, text=True,
-                            timeout=20, check=False)
-    base, _, url = result.stdout.strip().partition(" ")
-    failed = result.returncode or not base
-    reason = result.stderr.strip() or "no base branch returned"
-except (OSError, subprocess.TimeoutExpired) as error:
-    failed, reason = True, str(error)
-if failed:
-    refuse(f"couldn't read the base branch of {repo}#{num} ({reason}), and "
-           "PR_MERGE_GATE_PROTECTED_BASES is set, so the merge is refused.")
-if base in protected:
-    refuse(f"{repo}#{num} merges into {base}, a protected base branch "
-           "(PR_MERGE_GATE_PROTECTED_BASES). Agents don't merge into it. Hand "
-           "the PR to the owner as a link plus the merge command:\n"
-           f"  {url}\n  gh pr merge {num} -R {repo} --merge --delete-branch")
+sys.exit(3)  # the one checked form: the shell below checks the PR's facts
 PY
     printf '\0%s' "$input"
   } | python3 -c 'import sys
 code, _, payload = sys.stdin.buffer.read().decode("utf-8", "replace").partition("\0")
 exec(code)'
-  [ $? -eq 0 ] || exit 2
+  status=$?
+  [ $status -eq 3 ] && canonical=1
+  [ $status -eq 0 ] || [ -n "$canonical" ] || exit 2
 fi
-command -v jq >/dev/null 2>&1 || exit 0
+block() { printf 'BLOCKED: %s\n' "$*" >&2; exit 2; }
+if ! command -v jq >/dev/null 2>&1; then
+  [ -n "$canonical" ] && block "jq is missing, so pr-merge-gate can't read this merge's PR. Install jq, then retry."
+  case "$input" in *"gh pr merge"*) block "jq is missing, so pr-merge-gate can't check this command for a merge. Install jq, then retry." ;; esac
+  exit 0
+fi
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
-case "$cmd" in *"gh pr merge"*) ;; *) exit 0 ;; esac
+case "$cmd" in *"gh pr merge"*) ;; *) [ -n "$canonical" ] || exit 0 ;; esac
 
 # Tokenize with shell rules and parse the merge command up to the next
 # separator, redirection, newline, or comment: PR number/url (first bare arg),
@@ -268,7 +267,7 @@ case "$cmd" in *"gh pr merge"*) ;; *) exit 0 ;; esac
 # for a lone `gh pr merge <number> ...` with exact delete and nothing that moves
 # the cwd, repo, or timing; only then may the hook remove a worktree. A fd
 # number before a redirect (2>&1) is dropped so it isn't read as the PR.
-pr=""; repo=""; delete=""; auto=""; safe=""
+pr=""; repo=""; delete=""; auto=""; safe=""; none=""
 if out=$(python3 -c '
 import re, shlex, sys
 p = ";&|()<>\n"
@@ -276,7 +275,10 @@ c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", sys.argv[1].replace("\r", "").replace("\
 l = shlex.shlex(c, posix=True, punctuation_chars=p)
 l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
 t = list(l)
-i = next(i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"])
+i = next((i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"]), None)
+if i is None:  # the words only appear inside one quoted word
+    print("none=1")
+    sys.exit()
 v = dict(pr="", repo="", delete="", auto="", safe="")
 args = iter(t[i + 3:])
 for a in args:
@@ -311,6 +313,7 @@ print(" ".join(k + "=" + shlex.quote(x) for k, x in v.items()))
 ' "$cmd" 2>/dev/null); then
   eval "$out"
 else
+  [ -n "$canonical" ] && block "pr-merge-gate couldn't parse the merge it just checked, so the merge is refused."
   # Unparseable or no python3: the old word-split extraction for the PR and
   # repo, and treat any delete-looking word anywhere as a possible delete.
   set -- $(printf '%s' "$cmd" | sed -n 's/.*gh pr merge//p')
@@ -327,23 +330,48 @@ else
     case "$w" in --delete-branch*) delete="?" ;; --*) ;; -*d*) delete="?" ;; esac
   done
 fi
+if [ -n "$canonical" ] && { [ -n "$none" ] || [ -z "$pr" ] || [ -z "$repo" ]; }; then
+  block "pr-merge-gate couldn't parse the merge it just checked, so the merge is refused."
+fi
+[ -n "$none" ] && exit 0
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] && { cd "$cwd" 2>/dev/null || safe=""; }
 repoflag=""; [ -n "$repo" ] && repoflag="-R $repo"
+cantread() {
+  block "pr-merge-gate couldn't read the $1 of ${2:-this PR} ($(printf '%s' "$3" | head -n 3 | tr '\n' ' ')), so the merge is refused. Retry once gh can read it: check \`gh auth status\` and \`gh api rate_limit\`."
+}
 # The PR url names the base repo even when the head is a fork.
-info=$(gh pr view ${pr:+"$pr"} $repoflag --json url,headRefName \
-  -q '.url + " " + .headRefName' 2>/dev/null) || exit 0
-url=${info%% *}; head=${info#* }
+info=$(gh pr view ${pr:+"$pr"} $repoflag --json url,headRefName,headRefOid \
+  -q '.url + " " + .headRefName + " " + .headRefOid' 2>&1) \
+  || cantread "head commit" "PR ${pr:-for this branch}${repo:+ in $repo}" "$info"
+url=${info%% *}; head=${info#* }; sha=${head#* }; head=${head%% *}
 owner=$(printf '%s' "$url" | cut -d/ -f4)
 name=$(printf '%s' "$url" | cut -d/ -f5)
 num=$(printf '%s' "$url" | cut -d/ -f7)
+case "$num$sha" in *[!0-9a-f]*) cantread "head commit" "PR ${pr:-for this branch}" "$info" ;; esac
+[ -n "$owner" ] && [ -n "$name" ] && [ -n "$num" ] && [ ${#sha} -ge 40 ] \
+  || cantread "head commit" "PR ${pr:-for this branch}" "$info"
 
-threads=$(gh api graphql -f owner="$owner" -f name="$name" -F num="$num" -f query='
-  query($owner:String!,$name:String!,$num:Int!){ repository(owner:$owner,name:$name){
-    pullRequest(number:$num){ reviewThreads(first:100){ nodes{
-      id isResolved path line comments(first:1){ nodes{ author{login} body url } } } } } } }' \
+# 1. Checks. With --json, gh prints every check and exits 0, or exits 1 with
+# "no checks reported" when the head has none, which passes.
+checks=$(gh pr checks "$num" -R "$owner/$name" --json name,bucket \
+  -q '.[] | select(.bucket != "pass" and .bucket != "skipping") | "  \(.name) (\(.bucket))"' 2>&1)
+case $? in
+  0) [ -z "$checks" ] || block "$owner/$name#$num has checks that are pending or failed:
+$checks
+Wait for them to finish (gh pr checks $num -R $owner/$name --watch), fix any failure and push, then retry." ;;
+  *) case "$checks" in *"no checks reported"*) ;; *) cantread "checks" "$owner/$name#$num" "$checks" ;; esac ;;
+esac
+
+# 2. Review threads, every page: --paginate follows endCursor until the last.
+threads=$(gh api graphql --paginate -f owner="$owner" -f name="$name" -F num="$num" -f query='
+  query($owner:String!,$name:String!,$num:Int!,$endCursor:String){ repository(owner:$owner,name:$name){
+    pullRequest(number:$num){ reviewThreads(first:100,after:$endCursor){ nodes{
+      id isResolved path line comments(first:1){ nodes{ author{login} body url } } }
+      pageInfo{ hasNextPage endCursor } } } } }' \
   -q '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved|not)
-      | "\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | gsub("\n";" ") | .[:160])"' 2>/dev/null) || threads=""
+      | "\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | gsub("\n";" ") | .[:160])"' 2>&1) \
+  || cantread "review threads" "$owner/$name#$num" "$threads"
 if [ -n "$threads" ]; then
 cat >&2 <<MSG
 BLOCKED: $owner/$name#$num has unresolved review threads. Read each one, then
@@ -357,6 +385,21 @@ $threads
 MSG
 exit 2
 fi
+
+# 3. Blind-review verdict for the current head: the first line of a comment by
+# the repo's owner, a member, or a collaborator, since anyone can comment on a
+# public repo.
+verdict="Blind review: pass $sha"
+firsts=$(gh api "repos/$owner/$name/issues/$num/comments" --paginate \
+  -q '.[] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
+      | .body | split("\n")[0] | rtrimstr("\r")' 2>&1) \
+  || cantread "comments" "$owner/$name#$num" "$firsts"
+printf '%s\n' "$firsts" | grep -Fxq "$verdict" || block "$owner/$name#$num has no blind-review verdict for its head commit $sha.
+After a blind review of this commit passes, post a PR comment (as the repo's
+owner, a member, or a collaborator) whose first line is exactly:
+  $verdict
+for example: gh pr comment $num -R $owner/$name --body-file <file>
+A verdict for an older commit doesn't count: a new commit needs a new review."
 
 # Under the gate the only merge allowed names its repo with -R, and gh never
 # deletes a local branch then, so no worktree stands in its way: never touch one.
