@@ -503,6 +503,7 @@ def ffmpeg():
             "--from",
             "imageio-ffmpeg",
             "python",
+            "-I",
             "-c",
             "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())",
         ],
@@ -665,7 +666,21 @@ def main(argv):
         path = "/" + check(REDDIT_PATH, args[0], "reddit path").lstrip("/")
         params = [tuple(check(PARAM, p, "KEY=VALUE").split("=", 1)) for p in args[1:]]
         query = "?" + urllib.parse.urlencode(params) if params else ""
-        run(["curl", "-s", "-A", "curl/8.7.1", MIRROR + path + query])
+        # -q first, so no ~/.curlrc adds options.
+        run(
+            [
+                "curl",
+                "-q",
+                "-s",
+                "--proto",
+                "=https",
+                "--max-time",
+                str(TIMEOUT),
+                "-A",
+                "curl/8.7.1",
+                MIRROR + path + query,
+            ]
+        )
     elif cmd == "get" and 1 <= len(args) <= 3:
         get(*args)
     else:

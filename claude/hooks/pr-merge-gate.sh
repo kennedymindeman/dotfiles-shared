@@ -253,7 +253,7 @@ if base in protected:
            f"  {url}\n  gh pr merge {num} -R {repo} --merge --delete-branch")
 PY
     printf '\0%s' "$input"
-  } | python3 -c 'import sys
+  } | python3 -I -c 'import sys
 code, _, payload = sys.stdin.buffer.read().decode("utf-8", "replace").partition("\0")
 exec(code)'
   [ $? -eq 0 ] || exit 2
@@ -291,7 +291,7 @@ case "$cmd" in *"gh pr merge"*) ;; *) [ -n "$plain" ] || exit 0 ;; esac
 # the cwd, repo, or timing; only then may the hook remove a worktree. A fd
 # number before a redirect (2>&1) is dropped so it isn't read as the PR.
 pr=""; repo=""; delete=""; auto=""; safe=""
-if out=$(python3 -c '
+if out=$(python3 -I -c '
 import re, shlex, sys
 p = ";&|()<>\n"
 c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", sys.argv[1].replace("\r", "").replace("\\\n", ""))
