@@ -1,8 +1,8 @@
 #!/bin/sh
 # PreToolUse hook (matcher: Bash). Blocks `gh pr merge` while the PR has
 # unresolved review threads, so Copilot/human comments get a reply and a
-# resolve before the merge lands; a merge it can't check (no jq, gh failing,
-# over 100 threads) is blocked too. With --delete-branch it also removes a clean
+# resolve before the merge lands; a plain merge (below) it can't check is
+# blocked too. With --delete-branch it also removes a clean
 # linked worktree holding the head branch, since gh can't delete a branch that
 # is checked out (dotfiles#125). Exit 2 = block; anything else = allow.
 #
@@ -258,22 +258,30 @@ code, _, payload = sys.stdin.buffer.read().decode("utf-8", "replace").partition(
 exec(code)'
   [ $? -eq 0 ] || exit 2
 fi
-# Without jq, python3 reads the command only to refuse a recognised merge
-# below; everything else is allowed, as before.
-nojq=""
+# A plain merge is a command that is nothing but one gh pr merge with no shell
+# syntax: VAR=value words, gh by name or path, pr, merge, then plain words.
+# Only a plain merge is blocked when a check below can't run; anything else is
+# handled as before. Without jq, python3 reads the command from stdin.
+w='[A-Za-z0-9_./:=@,+~-]' s="[ $(printf '\t')]"
+plain="" nojq=""
 if command -v jq >/dev/null 2>&1; then
   cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
 else
   nojq=1
   cmd=$(printf '%s' "$input" | python3 -c 'import json, sys
-try:
-    c = json.load(sys.stdin)["tool_input"]["command"]
-except Exception:
-    c = ""
-sys.stdout.write(c if isinstance(c, str) else "")' 2>/dev/null)
+c = json.load(sys.stdin)["tool_input"]["command"]
+sys.stdout.write(c if isinstance(c, str) else "")' 2>/dev/null) || exit 0
 fi
-printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+merge' || exit 0
-literal=""; case "$cmd" in *"gh pr merge"*) literal=1 ;; esac
+case "$cmd" in *"
+"*) ;; *)
+  printf '%s\n' "$cmd" | grep -Eqx "$s*([A-Za-z_][A-Za-z0-9_]*=$w*$s+)*($w*/)?gh$s+pr$s+merge($s+$w+)*$s*" && plain=1 ;;
+esac
+if [ -n "$nojq" ]; then
+  [ -n "$plain" ] || exit 0
+  echo "BLOCKED: pr-merge-gate can't check this merge for unresolved review threads because jq is missing. Install jq, then retry." >&2
+  exit 2
+fi
+case "$cmd" in *"gh pr merge"*) ;; *) [ -n "$plain" ] || exit 0 ;; esac
 
 # Tokenize with shell rules and parse the merge command up to the next
 # separator, redirection, newline, or comment: PR number/url (first bare arg),
@@ -282,75 +290,16 @@ literal=""; case "$cmd" in *"gh pr merge"*) literal=1 ;; esac
 # for a lone `gh pr merge <number> ...` with exact delete and nothing that moves
 # the cwd, repo, or timing; only then may the hook remove a worktree. A fd
 # number before a redirect (2>&1) is dropped so it isn't read as the PR.
-# merge=1 only for a recognised merge: a simple command whose command word,
-# after VAR=value words and command/env, has basename gh and is followed by
-# pr merge (not --help). Heredoc bodies, comments, quoted text, and other
-# commands' arguments are not merges. Only a recognised merge is refused when
-# a check below can't run; exit 4 = recognised but parsed by the fallback.
-pr=""; repo=""; delete=""; auto=""; safe=""; merge=""
+pr=""; repo=""; delete=""; auto=""; safe=""
 if out=$(python3 -c '
-import os, re, shlex, sys
+import re, shlex, sys
 p = ";&|()<>\n"
 c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", sys.argv[1].replace("\r", "").replace("\\\n", ""))
-
-
-def words(s):
-    l = shlex.shlex(s, posix=True, punctuation_chars=p)
-    l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
-    return list(l)
-
-
-def without_heredocs(s):
-    out, ends = [], []
-    for line in s.split("\n"):
-        if ends:
-            if line.strip() == ends[0]:
-                ends.pop(0)
-            continue
-        out.append(line)
-        ends = re.findall(r"(?<!<)<<(?!<)-?\s*[\"\x27]?(\w+)", line)
-    return "\n".join(out)
-
-
-def merges(s):
-    kept, comment = [], False
-    for w in s:
-        if comment and "\n" in w and set(w) <= set(p):
-            comment = False
-        comment = comment or w.startswith("#")
-        if not comment:
-            kept.append(w)
-    found = []
-    for k in range(len(kept)):
-        if k and not (kept[k - 1] and set(kept[k - 1]) <= set(";&|()\n")):
-            continue
-        j = k
-        while j < len(kept) and (kept[j] in ("command", "env")
-                                 or re.fullmatch(r"[A-Za-z_]\w*=.*", kept[j], re.S)):
-            j += 1
-        if kept[j:j + 1] and os.path.basename(kept[j]) == "gh" and kept[j + 1:j + 3] == ["pr", "merge"]:
-            rest = []
-            for w in kept[j + 3:]:
-                if w and set(w) <= set(p):
-                    break
-                rest.append(w)
-            if "--help" not in rest and "-h" not in rest:
-                found.append(j)
-    return found
-
-
-try:
-    t = words(c)
-except ValueError:
-    t = []
-try:
-    recognised = bool(merges(words(without_heredocs(c))))
-except ValueError:
-    recognised = False
-i = next((i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"]), None)
-if i is None:
-    sys.exit(4 if recognised else 1)
-v = dict(pr="", repo="", delete="", auto="", safe="", merge="1" if recognised else "")
+l = shlex.shlex(c, posix=True, punctuation_chars=p)
+l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
+t = list(l)
+i = next(i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"])
+v = dict(pr="", repo="", delete="", auto="", safe="")
 args = iter(t[i + 3:])
 for a in args:
     if set(a) <= set(p) or a.startswith("#"):
@@ -384,7 +333,6 @@ print(" ".join(k + "=" + shlex.quote(x) for k, x in v.items()))
 ' "$cmd" 2>/dev/null); then
   eval "$out"
 else
-  [ $? -eq 4 ] && merge=1
   # Unparseable or no python3: the old word-split extraction for the PR and
   # repo, and treat any delete-looking word anywhere as a possible delete.
   set -- $(printf '%s' "$cmd" | sed -n 's/.*gh pr merge//p')
@@ -401,19 +349,12 @@ else
     case "$w" in --delete-branch*) delete="?" ;; --*) ;; -*d*) delete="?" ;; esac
   done
 fi
-if [ -n "$nojq" ]; then
-  [ -n "$merge" ] || exit 0
-  echo "BLOCKED: pr-merge-gate can't check this merge for unresolved review threads because jq is missing. Install jq, then retry." >&2
-  exit 2
-fi
-# Text without the literal words that isn't a recognised merge was never gated.
-[ -n "$literal$merge" ] || exit 0
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] && { cd "$cwd" 2>/dev/null || safe=""; }
 # The PR url names the base repo even when the head is a fork.
 info=$(gh pr view ${pr:+"$pr"} ${repo:+-R "$repo"} --json url,headRefName \
   -q '.url + " " + .headRefName' 2>/dev/null) || {
-  [ -n "$merge" ] || exit 0
+  [ -n "$plain" ] || exit 0
   cat >&2 <<MSG
 BLOCKED: pr-merge-gate couldn't look up this PR with gh pr view, so it can't
 check for unresolved review threads. Check \`gh auth status\` and that the PR
@@ -433,7 +374,7 @@ threads=$(gh api graphql -f owner="$owner" -f name="$name" -F num="$num" -f quer
   -q '.data.repository.pullRequest.reviewThreads | (.nodes[] | select(.isResolved|not)
       | "\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | gsub("\n";" ") | .[:160])"), (select(.pageInfo.hasNextPage) | "MORE")' 2>/dev/null) || {
   threads=""
-  [ -z "$merge" ] || { cat >&2 <<MSG
+  [ -z "$plain" ] || { cat >&2 <<MSG
 BLOCKED: pr-merge-gate couldn't query the review threads of $owner/$name#$num
 (gh api graphql failed: a rate limit, an outage, or auth). Check
 \`gh api rate_limit\` and \`gh auth status\`, wait if the limit is spent, then
@@ -462,7 +403,7 @@ $threads
 MSG
 exit 2
 fi
-if [ -n "$more" ] && [ -n "$merge" ]; then
+if [ -n "$more" ] && [ -n "$plain" ]; then
 cat >&2 <<MSG
 BLOCKED: $owner/$name#$num has more than 100 review threads, more than
 pr-merge-gate reads, so it can't confirm they are all resolved. Check every
