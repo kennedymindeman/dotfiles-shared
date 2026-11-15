@@ -18,7 +18,8 @@ REPO = "example-org/example-repo"
 
 # Stands in for gh. Logs "<cwd>|<args>" per call. `pr view <N>` answers with
 # base GH_STUB_BASE_<N> (else GH_STUB_BASE; FAIL exits 1), and `api graphql`
-# with the fixture unresolved threads.
+# with the fixture unresolved threads; GH_STUB_GRAPHQL=FAIL makes it exit 1, and
+# any other GH_STUB_GRAPHQL is a response run through the call's -q filter.
 STUB = """#!/bin/sh
 printf '%s|%s\\n' "$PWD" "$*" >> "$GH_STUB_LOG"
 printf '%s\\036' "$PWD" "$@" >> "$GH_STUB_ARGS"
@@ -32,7 +33,13 @@ case "$1 $2" in
       *baseRefName*) printf '%s %s%s\\n' "$base" "$GH_STUB_URL" "$sel" ;;
       *) printf '%s%s\\n' "$GH_STUB_URL" "$sel" ;;
     esac ;;
-  "api graphql") printf '%s' "$GH_STUB_THREADS" ;;
+  "api graphql")
+    [ "${GH_STUB_GRAPHQL:-}" = FAIL ] && { echo "API rate limit exceeded" >&2; exit 1; }
+    if [ -n "${GH_STUB_GRAPHQL:-}" ]; then
+      while [ $# -gt 0 ] && [ "$1" != -q ]; do shift; done
+      printf '%s' "$GH_STUB_GRAPHQL" | jq -r "$2"; exit
+    fi
+    printf '%s' "$GH_STUB_THREADS" ;;
 esac
 """
 
@@ -135,6 +142,85 @@ CANONICAL = [
     f"gh  pr\tmerge 8 -R {REPO}",
 ]
 
+# Commands that are nothing but one gh pr merge with no shell syntax: refused
+# whenever a check can't run.
+PLAIN = [
+    "gh pr merge 7",
+    "gh pr merge 7 --squash -d",
+    "gh pr merge 7 -R o/r --merge",
+    "gh  pr\tmerge 7",
+    "/opt/homebrew/bin/gh pr merge 7",
+    "GH_PAGER=cat gh pr merge 7",
+    "  gh pr merge 7  ",
+    "\tgh pr merge 7\t",
+]
+
+# Fake gh setups for run_hook; "no jq" also drops jq from PATH.
+MODES = {
+    "ok": {},
+    "threads": {"threads": "T1\tf.py:3"},
+    "lookup fails": {"base": "FAIL"},
+    "query fails": {"graphql": "FAIL"},
+    "no jq": {},
+}
+
+
+def thread_page(more):
+    """A thread query response: 100 resolved threads, and maybe a next page."""
+    node = {
+        "isResolved": True,
+        "path": "f.py",
+        "line": 1,
+        "comments": {"nodes": [{"author": {"login": "bot"}, "body": "x", "url": "u"}]},
+    }
+    nodes = [{"id": f"T{i}", **node} for i in range(100)]
+    threads = {"pageInfo": {"hasNextPage": more}, "nodes": nodes}
+    return json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": threads}}}})
+
+
+# Everything else keeps the hook's behaviour from before plain merges failed
+# closed. Each value is the outcome per mode in MODES order, captured from that
+# earlier hook: exit code, then the gh calls (view:<args before --json>,
+# graphql:<number>).
+OTHERS = {
+    "git commit -m 'Gate gh pr merge'": ("0 view:' graphql:7", "2 view:' graphql:7", "0 view:'", "0 view:' graphql:7", '0'),
+    "git commit -m 'gh  pr merge 7 docs'": ('0', '0', '0', '0', '0'),
+    "git commit -F - <<'EOF'\nBlock gh pr merge when the gate cannot check\nEOF": ('0 view:when graphql:7', '2 view:when graphql:7', '0 view:when', '0 view:when graphql:7', '0'),
+    "gh pr create --body-file - <<'EOF'\nThe gate shouldn't let gh pr merge through\nEOF": ('0 view:through graphql:7', '2 view:through graphql:7', '0 view:through', '0 view:through graphql:7', '0'),
+    'cat <<\\EOF\ngh pr merge 7\nEOF': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'cat <<-EOF\n\tgh pr merge 7\n\tEOF': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'cat <<EOF\ngh pr merge 7\n  EOF\nEOF': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'ls -la # then gh pr merge later': ('0 view:later graphql:7', '2 view:later graphql:7', '0 view:later', '0 view:later graphql:7', '0'),
+    "ls # shouldn't let gh pr merge through": ('0 view:through graphql:7', '2 view:through graphql:7', '0 view:through', '0 view:through graphql:7', '0'),
+    "gh pr merge 7 # don't merge yet": ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    "echo '#' && gh pr merge 7": ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'echo gh pr merge is gated now': ('0 view:is graphql:7', '2 view:is graphql:7', '0 view:is', '0 view:is graphql:7', '0'),
+    "grep -n 'gh pr merge' README.md": ("0 view:' graphql:7", "2 view:' graphql:7", "0 view:'", "0 view:' graphql:7", '0'),
+    "printf '%s\\n' 'gh pr merge 7'": ("0 view:7' graphql:7", "2 view:7' graphql:7", "0 view:7'", "0 view:7' graphql:7", '0'),
+    "echo ';' gh pr merge 7": ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'echo a \\; gh pr merge 7': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'echo $((1<<2))\ngh pr merge 7': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'echo "<<EOF"\ngh pr merge 7': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'echo ${X:-;gh pr merge 7}': ('0 view:7} graphql:7', '2 view:7} graphql:7', '0 view:7}', '0 view:7} graphql:7', '0'),
+    "gh pr merge 7 --body '-h'": ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'gh pr merge 7 && gh pr merge 8': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'git push && gh pr merge 7 --squash': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'gh pr merge 7 -d | cat': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    '(gh pr merge 7)': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    "sh -c 'gh pr merge 7 ; : gh  pr merge 99 '": ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'echo x; gh  pr merge 7': ('0', '0', '0', '0', '0'),
+    'cd /tmp && gh\tpr merge 7': ('0', '0', '0', '0', '0'),
+    'gh pr merge "7"': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'gh pr merge $PR': ('0 view:$PR graphql:7', '2 view:$PR graphql:7', '0 view:$PR', '0 view:$PR graphql:7', '0'),
+    "gh pr merge 7 --subject 'a b'": ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'env /x/gh pr merge 7': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'command gh pr merge 7': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'gh pr merge 7\ngit pull': ('0 view:7 graphql:7', '2 view:7 graphql:7', '0 view:7', '0 view:7 graphql:7', '0'),
+    'ls -la': ('0', '0', '0', '0', '0'),
+    'gh pr view 7': ('0', '0', '0', '0', '0'),
+}
+HUGE_OK = '0 view:7 graphql:7'
+
 
 @unittest.skipIf(
     os.name == "nt" or not shutil.which("jq") or not shutil.which("python3"),
@@ -157,20 +243,22 @@ class PrMergeGateTests(unittest.TestCase):
         protected=None,
         threads="",
         extra=None,
+        graphql="",
         run_in=None,
         **bases,
     ):
-        # extra: optional "cwd" and "description" for the payload, or "raw"
-        # text sent instead of the JSON payload.
+        # extra: optional "cwd" and "description" for the payload, "raw"
+        # text sent instead of the JSON payload, or "path" after the fake gh.
         extra = extra or {}
         env = {
             **os.environ,
-            "PATH": f"{self.dir}{os.pathsep}{os.environ['PATH']}",
+            "PATH": f"{self.dir}{os.pathsep}{extra.get('path', os.environ['PATH'])}",
             "GH_STUB_LOG": str(self.log),
             "GH_STUB_ARGS": str(self.args_log),
             "GH_STUB_URL": URL,
             "GH_STUB_BASE": base,
             "GH_STUB_THREADS": threads,
+            "GH_STUB_GRAPHQL": graphql,
             **{f"GH_STUB_BASE_{n.lstrip('_')}": b for n, b in bases.items()},
         }
         for key in ("PR_MERGE_GATE_PROTECTED_BASES", "GH_REPO"):
@@ -511,7 +599,6 @@ class PrMergeGateTests(unittest.TestCase):
                     self.assertEqual(
                         self.run_hook(command, protected=protected).returncode, 0
                     )
-        self.assertEqual(self.run_hook("gh pr merge 7", base="FAIL").returncode, 0)
 
     def test_default_makes_the_same_gh_calls_as_before(self):
         self.run_hook("gh pr merge 7 -R o/r")
@@ -522,15 +609,16 @@ class PrMergeGateTests(unittest.TestCase):
         query = (
             "\n  query($owner:String!,$name:String!,$num:Int!){ repository("
             "owner:$owner,name:$name){\n    pullRequest(number:$num){ "
-            "reviewThreads(first:100){ nodes{\n      id isResolved path line "
-            "comments(first:1){ nodes{ author{login} body url } } } } } } }"
+            "reviewThreads(first:100){ pageInfo{hasNextPage} nodes{\n      id "
+            "isResolved path line comments(first:1){ nodes{ author{login} body "
+            "url } } } } } } }"
         )
         jq = (
-            ".data.repository.pullRequest.reviewThreads.nodes[] | "
+            ".data.repository.pullRequest.reviewThreads | (.nodes[] | "
             "select(.isResolved|not)\n      | "
             r'"\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)'
             r"\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | "
-            r'gsub("\n";" ") | .[:160])"'
+            r'gsub("\n";" ") | .[:160])"), (select(.pageInfo.hasNextPage) | "MORE")'
         )
         self.assertEqual(
             calls,
@@ -574,6 +662,117 @@ class PrMergeGateTests(unittest.TestCase):
         self.assertEqual(self.run_hook("gh pr view 7").returncode, 0)
         self.assertEqual(self.gh_calls(), [])
 
+    # A merge whose check can't run is refused, saying which check failed.
+
+    def only_tools(self, *names):
+        """extra for run_hook: a PATH of the fake gh plus only these tools."""
+        tools = self.dir / "-".join(names)
+        tools.mkdir(exist_ok=True)
+        for name in names:
+            if not (tools / name).exists():
+                (tools / name).symlink_to(shutil.which(name))
+        return {"path": str(tools)}
+
+    def without_jq(self):
+        return self.only_tools("cat", "grep", "sed", "python3")
+
+    def no_python(self):
+        return self.only_tools("cat", "grep", "sed", "jq")
+
+    def test_missing_jq_refuses_a_merge(self):
+        result = self.run_hook("gh pr merge 7", base="dev", extra=self.without_jq())
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("jq is missing", result.stderr)
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_missing_jq_lets_other_commands_through(self):
+        for command in ("ls -la", "gh pr view 7", "git merge origin/main"):
+            with self.subTest(command=command):
+                result = self.run_hook(command, extra=self.without_jq())
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_failed_pr_lookup_refuses_a_merge(self):
+        result = self.run_hook("gh pr merge 7 -R o/r", base="FAIL")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("gh pr view", result.stderr)
+        self.assertIn("gh auth status", result.stderr)
+        self.assertNotIn("o/r", result.stderr)
+
+    def test_failed_thread_query_refuses_a_merge(self):
+        result = self.run_hook("gh pr merge 7", base="dev", graphql="FAIL")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("couldn't query the review threads", result.stderr)
+
+    def test_full_first_page_of_threads_refuses_a_merge(self):
+        result = self.run_hook("gh pr merge 7", base="dev", graphql=thread_page(True))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("more than 100 review threads", result.stderr)
+        result = self.run_hook("gh pr merge 7", base="dev", graphql=thread_page(False))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_plain_merges_fail_closed(self):
+        for command in PLAIN:
+            for mode, kwargs in [
+                ("lookup fails", {"base": "FAIL"}),
+                ("query fails", {"graphql": "FAIL"}),
+                ("second page", {"graphql": thread_page(True)}),
+                ("no jq", {"extra": self.without_jq()}),
+                ("no python3", {"base": "FAIL", "extra": self.no_python()}),
+            ]:
+                with self.subTest(command=command, mode=mode):
+                    result = self.run_hook(command, **kwargs)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("BLOCKED", result.stderr)
+            with self.subTest(command=command, mode="ok"):
+                self.assertEqual(self.run_hook(command).returncode, 0)
+
+    def outcome(self, command, mode):
+        """Exit code and gh calls under one of MODES, as one string."""
+        self.args_log.unlink(missing_ok=True)
+        kwargs = dict(MODES[mode])
+        if mode == "no jq":
+            kwargs["extra"] = self.without_jq()
+        result = self.run_hook(command, **kwargs)
+        calls = []
+        text = self.args_log.read_text() if self.args_log.exists() else ""
+        for call in text.split("\035"):
+            args = call.split("\036")[1:-1]
+            if args[:2] == ["pr", "view"]:
+                calls.append("view:" + ",".join(args[2 : args.index("--json")]))
+            elif args[:2] == ["api", "graphql"]:
+                calls.append("graphql:" + next(a for a in args if a.startswith("num="))[4:])
+            elif args:
+                calls.append(" ".join(args))
+        return " ".join([str(result.returncode), *calls])
+
+    def test_other_commands_behave_as_before(self):
+        for command, expected in OTHERS.items():
+            for mode, want in zip(MODES, expected):
+                with self.subTest(command=command, mode=mode):
+                    self.assertEqual(self.outcome(command, mode), want)
+
+    def test_huge_command_behaves_as_before(self):
+        # Too long for a command-line argument; it has quotes, so not plain.
+        command = "gh pr merge 7 --body '" + "x" * 2**21 + "'"
+        self.assertEqual(self.outcome(command, "ok"), HUGE_OK)
+        self.assertEqual(self.outcome(command, "no jq"), "0")
+
+    def test_mention_only_in_the_description_is_ignored(self):
+        for extra in ({}, self.without_jq()):
+            with self.subTest(jq="path" not in extra):
+                extra = {**extra, "description": "then gh pr merge 7"}
+                result = self.run_hook("ls -la", base="FAIL", extra=extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.gh_calls(), [])
+
+    def test_repo_with_spaces_stays_one_argument(self):
+        self.run_hook("gh pr merge 7 -R 'o/r --web'")
+        calls = [
+            c.split("\036")[:-1] for c in self.args_log.read_text().split("\035") if c
+        ]
+        self.assertEqual(calls[0][1:7], ["pr", "view", "7", "-R", "o/r --web", "--json"])
 
 # The gate's Python runs gh through subprocess, which on Windows finds the
 # real gh.exe rather than the sh fake, as for PrMergeGateTests.
@@ -840,6 +1039,17 @@ class WorktreeCleanupTests(unittest.TestCase):
         result = self.hook()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.main / ".git").exists())
+
+    @unittest.skipIf(os.name == "nt", "needs an executable sh script")
+    def test_repo_config_cannot_run_a_program(self):
+        marker = self.main.parent / "fsmonitor-ran"
+        script = self.main.parent / "fsmonitor"
+        script.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n")
+        script.chmod(0o755)
+        self.git(self.main, "config", "core.fsmonitor", str(script))
+        result = self.hook()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists())
 
     def test_without_delete_branch_worktree_stays(self):
         result = self.hook("gh pr merge 1 --squash")
