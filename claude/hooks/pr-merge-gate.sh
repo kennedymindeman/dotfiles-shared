@@ -333,7 +333,7 @@ def runs(t, k):
         b += 1
     return any(t[j].rsplit("/", 1)[-1] in SHELLS for j in range(a, b) if j != k)
 def parse(raw):
-    c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", raw.replace("\r", "").replace("\\n", ""))
+    c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", raw.replace("\r", "").replace("\\\n", ""))
     t = lex(c)
     i, nested, run = find(t), "", ""
     if i is None:
