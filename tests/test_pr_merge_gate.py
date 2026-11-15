@@ -157,6 +157,7 @@ class PrMergeGateTests(unittest.TestCase):
         protected=None,
         threads="",
         extra=None,
+        run_in=None,
         **bases,
     ):
         # extra: optional "cwd" and "description" for the payload, or "raw"
@@ -190,6 +191,7 @@ class PrMergeGateTests(unittest.TestCase):
             [str(HOOK)],
             input=extra.get("raw", json.dumps(payload)),
             env=env,
+            cwd=run_in,
             capture_output=True,
             check=False,
             text=True,
@@ -295,6 +297,32 @@ class PrMergeGateTests(unittest.TestCase):
                 self.assertEqual(into_dev.returncode, 0, into_dev.stderr)
                 harmless = self.run_hook("ls -la", protected="main", extra=extra)
                 self.assertEqual(harmless.returncode, 0, harmless.stderr)
+
+    def test_modules_in_the_working_directory_are_not_imported(self):
+        # The hook runs in the session's checkout; a json.py or shlex.py there
+        # must not replace the standard-library module the gate's Python imports.
+        checkout = self.dir / "checkout"
+        checkout.mkdir()
+        marker = self.dir / "planted-ran"
+        for name in ("json", "shlex"):
+            (checkout / f"{name}.py").write_text(
+                f"open({str(marker)!r}, 'a').write({name!r})\n"
+            )
+        cases = (
+            ({"protected": "main"}, "protected base branch"),
+            ({"base": "dev", "threads": "T1\tf.py:3"}, "unresolved review threads"),
+        )
+        for kwargs, reason in cases:
+            with self.subTest(**kwargs):
+                result = self.run_hook(
+                    f"gh pr merge 7 -R {REPO}",
+                    extra={"cwd": checkout},
+                    run_in=checkout,
+                    **kwargs,
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(reason, result.stderr)
+        self.assertFalse(marker.exists(), "a module from the working directory ran")
 
     def test_harmless_mentions_are_allowed(self):
         for command in HARMLESS:
