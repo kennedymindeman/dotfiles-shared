@@ -1,7 +1,8 @@
 # -------------------------------
 #  Basic environment setup
 # -------------------------------
-Set-StrictMode -Version Latest
+# No Set-StrictMode here: a profile is dot-sourced, so it would stay on for the
+# whole session and break tools that test an unset variable in their prompt code.
 
 # Add common CLI tools to PATH if installed via Scoop or other managers
 $commonBins = @(
