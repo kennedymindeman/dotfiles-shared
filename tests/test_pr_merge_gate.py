@@ -142,6 +142,22 @@ CANONICAL = [
     f"gh  pr\tmerge 8 -R {REPO}",
 ]
 
+# Commands that mention the words without running a merge. Without a protected
+# list they must behave as before the checks failed closed, even when gh fails.
+MENTIONS = {
+    "help": "gh pr merge --help",
+    "heredoc body": "git commit -F - <<'EOF'\nBlock gh pr merge when the gate cannot check\nEOF",
+    "echo argument": "echo gh pr merge is gated now",
+    "comment": "ls -la # then gh pr merge later",
+    "apostrophe in heredoc": (
+        "gh pr create --body-file - <<'EOF'\nThe gate shouldn't let gh pr merge through\nEOF"
+    ),
+    "apostrophe in comment": "ls # shouldn't let gh pr merge through",
+    "quoted": "git commit -m 'Gate gh pr merge'",
+    "quoted, double space": "git commit -m 'gh  pr merge 7 docs'",
+    "grep pattern": "grep -n 'gh pr merge' README.md",
+}
+
 
 @unittest.skipIf(
     os.name == "nt" or not shutil.which("jq") or not shutil.which("python3"),
@@ -507,11 +523,11 @@ class PrMergeGateTests(unittest.TestCase):
             "url } } } } } } }"
         )
         jq = (
-            ".data.repository.pullRequest.reviewThreads | if .pageInfo.hasNextPage "
-            'then "MORE"\n      else .nodes[] | select(.isResolved|not)\n      | '
+            ".data.repository.pullRequest.reviewThreads | (.nodes[] | "
+            "select(.isResolved|not)\n      | "
             r'"\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)'
             r"\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | "
-            r'gsub("\n";" ") | .[:160])" end'
+            r'gsub("\n";" ") | .[:160])"), (select(.pageInfo.hasNextPage) | "MORE")'
         )
         self.assertEqual(
             calls,
@@ -557,14 +573,17 @@ class PrMergeGateTests(unittest.TestCase):
 
     # A merge whose check can't run is refused, saying which check failed.
 
-    def without_jq(self):
-        """A PATH directory holding only what the hook needs before jq."""
-        tools = self.dir / "nojq"
+    def only_tools(self, *names):
+        """extra for run_hook: a PATH of the fake gh plus only these tools."""
+        tools = self.dir / "-".join(names)
         tools.mkdir(exist_ok=True)
-        for name in ("cat", "grep"):
+        for name in names:
             if not (tools / name).exists():
                 (tools / name).symlink_to(shutil.which(name))
         return {"path": str(tools)}
+
+    def without_jq(self):
+        return self.only_tools("cat", "grep", "sed", "python3")
 
     def test_missing_jq_refuses_a_merge(self):
         result = self.run_hook("gh pr merge 7", base="dev", extra=self.without_jq())
@@ -625,6 +644,71 @@ class PrMergeGateTests(unittest.TestCase):
         self.assertIn("more than 100 review threads", result.stderr)
         result = self.run_hook("gh pr merge 7", base="dev", graphql=page(False))
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_mentions_pass_when_checks_fail(self):
+        for name, command in MENTIONS.items():
+            for mode, kwargs in [
+                ("lookup fails", {"base": "FAIL"}),
+                ("thread query fails", {"base": "dev", "graphql": "FAIL"}),
+                ("no jq", {"extra": self.without_jq()}),
+            ]:
+                with self.subTest(name, mode=mode):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_hook(command, **kwargs)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    if mode == "no jq" or "gh pr merge" not in command:
+                        self.assertEqual(self.gh_calls(), [])
+
+    def test_mention_only_in_the_description_is_ignored(self):
+        for extra in ({}, self.without_jq()):
+            with self.subTest(jq="path" not in extra):
+                extra = {**extra, "description": "then gh pr merge 7"}
+                result = self.run_hook("ls -la", base="FAIL", extra=extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.gh_calls(), [])
+
+    def test_missing_python_keeps_a_quoted_mention_open(self):
+        result = self.run_hook(
+            MENTIONS["quoted"],
+            base="FAIL",
+            extra=self.only_tools("cat", "grep", "sed", "jq"),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_quoted_second_spelling_does_not_move_the_lookup(self):
+        result = self.run_hook(
+            "sh -c 'gh pr merge 7 ; : gh  pr merge 99 '", threads="T1\tf.py:3"
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("unresolved review threads", result.stderr)
+        lookup = self.gh_calls()[0].split("|", 1)[1]
+        self.assertTrue(lookup.startswith("pr view 7 --json"), lookup)
+
+    def test_gh_by_path_is_a_merge(self):
+        for command in (
+            "/opt/homebrew/bin/gh pr merge 7",
+            "~/.local/bin/gh pr merge 7",
+            "env /some/dir/gh pr merge 7",
+            "A=1 command gh pr merge 7",
+        ):
+            for kwargs in ({"base": "FAIL"}, {"base": "dev", "graphql": "FAIL"}):
+                with self.subTest(command=command, **kwargs):
+                    result = self.run_hook(command, **kwargs)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_lookup_message_has_no_live_substitution(self):
+        result = self.run_hook(
+            "gh pr merge '$(touch X)' -R 'o/r$(touch Y)'", base="FAIL"
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertNotIn("$(", result.stderr)
+
+    def test_repo_with_spaces_stays_one_argument(self):
+        self.run_hook("gh pr merge 7 -R 'o/r --web'")
+        calls = [
+            c.split("\036")[:-1] for c in self.args_log.read_text().split("\035") if c
+        ]
+        self.assertEqual(calls[0][1:7], ["pr", "view", "7", "-R", "o/r --web", "--json"])
 
 
 # The gate's Python runs gh through subprocess, which on Windows finds the
@@ -892,6 +976,17 @@ class WorktreeCleanupTests(unittest.TestCase):
         result = self.hook()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.main / ".git").exists())
+
+    @unittest.skipIf(os.name == "nt", "needs an executable sh script")
+    def test_repo_config_cannot_run_a_program(self):
+        marker = self.main.parent / "fsmonitor-ran"
+        script = self.main.parent / "fsmonitor"
+        script.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n")
+        script.chmod(0o755)
+        self.git(self.main, "config", "core.fsmonitor", str(script))
+        result = self.hook()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists())
 
     def test_without_delete_branch_worktree_stays(self):
         result = self.hook("gh pr merge 1 --squash")
