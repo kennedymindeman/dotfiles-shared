@@ -326,6 +326,29 @@ class LinkTests(unittest.TestCase):
         self.assertNotIn("Claude mechanics", claude)
         self.assertIn("Use focused changes", claude)
 
+    def test_rules_render_as_utf8_whatever_the_locale_encoding(self):
+        text = "Dash \u2014 ellipsis\u2026 \u2018quoted\u2019"
+        self.write(self.repo / "agents/core.md", f"Core {text}\n")
+        self.write(self.repo / "copilot/copilot-instructions.md", f"Copilot {text}\n")
+        self.write(self.overlay / "agents/home.md", f"Home {text}\n")
+        self.write(self.overlay / "agents/home.claude.md", f"Claude {text}\n")
+        # Make an implicit read_text() decode as a cp1252 locale would, on any OS.
+        with patch.object(
+            io, "text_encoding", lambda encoding, *args: encoding or "cp1252"
+        ):
+            self.apply("home", self.overlay)
+        expected = text.encode("utf-8")
+        for relative, sources in {
+            "AGENTS.md": ("Core", "Home"),
+            ".codex/AGENTS.md": ("Core", "Home"),
+            ".claude/CLAUDE.md": ("Core", "Home", "Claude"),
+            ".copilot/copilot-instructions.md": ("Copilot", "Core", "Home"),
+        }.items():
+            with self.subTest(relative=relative):
+                rendered = (self.home / relative).read_bytes()
+                for source in sources:
+                    self.assertIn(source.encode() + b" " + expected, rendered)
+
     def test_modified_private_copy_blocks_transition(self):
         self.apply("home", self.overlay)
         target = self.home / ".config/private.txt"
