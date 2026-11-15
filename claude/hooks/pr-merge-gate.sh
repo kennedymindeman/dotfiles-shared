@@ -16,7 +16,7 @@
 # Parsing arbitrary shell can't be made complete, so everything else that
 # names a merge is refused, as is any merge when the list names no branch or
 # a name git forbids. Under the list the hook never removes a worktree.
-set -uf  # -f: $repoflag and $cmd are word-split below and must not glob
+set -uf  # -f: $cmd is word-split below and must not glob
 input=$(cat)
 if [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ]; then
   # Every command goes to Python, which reads the command field itself: a
@@ -258,15 +258,22 @@ code, _, payload = sys.stdin.buffer.read().decode("utf-8", "replace").partition(
 exec(code)'
   [ $? -eq 0 ] || exit 2
 fi
-# Without jq the command can't be read out of the JSON, so any payload with
-# the words (JSON escapes \t \n \r count as whitespace) is refused.
-command -v jq >/dev/null 2>&1 || {
-  printf '%s' "$input" | grep -Eq 'gh([[:space:]]|\\[tnr])+pr([[:space:]]|\\[tnr])+merge' || exit 0
-  echo "BLOCKED: pr-merge-gate can't check this merge for unresolved review threads because jq is missing. Install jq, then retry." >&2
-  exit 2
-}
-cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+# Without jq, python3 reads the command only to refuse a recognised merge
+# below; everything else is allowed, as before.
+nojq=""
+if command -v jq >/dev/null 2>&1; then
+  cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+else
+  nojq=1
+  cmd=$(printf '%s' "$input" | python3 -c 'import json, sys
+try:
+    c = json.load(sys.stdin)["tool_input"]["command"]
+except Exception:
+    c = ""
+sys.stdout.write(c if isinstance(c, str) else "")' 2>/dev/null)
+fi
 printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+merge' || exit 0
+literal=""; case "$cmd" in *"gh pr merge"*) literal=1 ;; esac
 
 # Tokenize with shell rules and parse the merge command up to the next
 # separator, redirection, newline, or comment: PR number/url (first bare arg),
@@ -275,20 +282,75 @@ printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+merge' || exit 0
 # for a lone `gh pr merge <number> ...` with exact delete and nothing that moves
 # the cwd, repo, or timing; only then may the hook remove a worktree. A fd
 # number before a redirect (2>&1) is dropped so it isn't read as the PR.
-# Exit 3 = the words are never three separate shell words (only quoted text,
-# as in a commit message), so a check that can't run below doesn't block.
-pr=""; repo=""; delete=""; auto=""; safe=""; merge=1
+# merge=1 only for a recognised merge: a simple command whose command word,
+# after VAR=value words and command/env, has basename gh and is followed by
+# pr merge (not --help). Heredoc bodies, comments, quoted text, and other
+# commands' arguments are not merges. Only a recognised merge is refused when
+# a check below can't run; exit 4 = recognised but parsed by the fallback.
+pr=""; repo=""; delete=""; auto=""; safe=""; merge=""
 if out=$(python3 -c '
-import re, shlex, sys
+import os, re, shlex, sys
 p = ";&|()<>\n"
 c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", sys.argv[1].replace("\r", "").replace("\\\n", ""))
-l = shlex.shlex(c, posix=True, punctuation_chars=p)
-l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
-t = list(l)
+
+
+def words(s):
+    l = shlex.shlex(s, posix=True, punctuation_chars=p)
+    l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
+    return list(l)
+
+
+def without_heredocs(s):
+    out, ends = [], []
+    for line in s.split("\n"):
+        if ends:
+            if line.strip() == ends[0]:
+                ends.pop(0)
+            continue
+        out.append(line)
+        ends = re.findall(r"(?<!<)<<(?!<)-?\s*[\"\x27]?(\w+)", line)
+    return "\n".join(out)
+
+
+def merges(s):
+    kept, comment = [], False
+    for w in s:
+        if comment and "\n" in w and set(w) <= set(p):
+            comment = False
+        comment = comment or w.startswith("#")
+        if not comment:
+            kept.append(w)
+    found = []
+    for k in range(len(kept)):
+        if k and not (kept[k - 1] and set(kept[k - 1]) <= set(";&|()\n")):
+            continue
+        j = k
+        while j < len(kept) and (kept[j] in ("command", "env")
+                                 or re.fullmatch(r"[A-Za-z_]\w*=.*", kept[j], re.S)):
+            j += 1
+        if kept[j:j + 1] and os.path.basename(kept[j]) == "gh" and kept[j + 1:j + 3] == ["pr", "merge"]:
+            rest = []
+            for w in kept[j + 3:]:
+                if w and set(w) <= set(p):
+                    break
+                rest.append(w)
+            if "--help" not in rest and "-h" not in rest:
+                found.append(j)
+    return found
+
+
+try:
+    t = words(c)
+except ValueError:
+    t = []
+try:
+    recognised = bool(merges(words(without_heredocs(c))))
+except ValueError:
+    recognised = False
 i = next((i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"]), None)
 if i is None:
-    sys.exit(3)
-v = dict(pr="", repo="", delete="", auto="", safe="")
+    sys.exit(4 if recognised else 1)
+v = dict(pr="", repo="", delete="", auto="", safe="", merge="1" if recognised else "")
 args = iter(t[i + 3:])
 for a in args:
     if set(a) <= set(p) or a.startswith("#"):
@@ -322,10 +384,10 @@ print(" ".join(k + "=" + shlex.quote(x) for k, x in v.items()))
 ' "$cmd" 2>/dev/null); then
   eval "$out"
 else
-  [ $? -eq 3 ] && merge=""
+  [ $? -eq 4 ] && merge=1
   # Unparseable or no python3: the old word-split extraction for the PR and
   # repo, and treat any delete-looking word anywhere as a possible delete.
-  set -- $(printf '%s' "$cmd" | sed -n 's/.*gh[[:space:]]\{1,\}pr[[:space:]]\{1,\}merge//p')
+  set -- $(printf '%s' "$cmd" | sed -n 's/.*gh pr merge//p')
   while [ $# -gt 0 ]; do
     case "$1" in
       -R|--repo) repo=${2:-}; [ $# -gt 1 ] && shift ;;
@@ -339,18 +401,23 @@ else
     case "$w" in --delete-branch*) delete="?" ;; --*) ;; -*d*) delete="?" ;; esac
   done
 fi
+if [ -n "$nojq" ]; then
+  [ -n "$merge" ] || exit 0
+  echo "BLOCKED: pr-merge-gate can't check this merge for unresolved review threads because jq is missing. Install jq, then retry." >&2
+  exit 2
+fi
+# Text without the literal words that isn't a recognised merge was never gated.
+[ -n "$literal$merge" ] || exit 0
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] && { cd "$cwd" 2>/dev/null || safe=""; }
-repoflag=""; [ -n "$repo" ] && repoflag="-R $repo"
 # The PR url names the base repo even when the head is a fork.
-info=$(gh pr view ${pr:+"$pr"} $repoflag --json url,headRefName \
+info=$(gh pr view ${pr:+"$pr"} ${repo:+-R "$repo"} --json url,headRefName \
   -q '.url + " " + .headRefName' 2>/dev/null) || {
   [ -n "$merge" ] || exit 0
   cat >&2 <<MSG
-BLOCKED: pr-merge-gate couldn't look up this PR with
-  gh pr view${pr:+ $pr}${repo:+ -R $repo}
-so it can't check for unresolved review threads. Run that command to see why
-(check \`gh auth status\` and the PR number or repo), fix it, then retry.
+BLOCKED: pr-merge-gate couldn't look up this PR with gh pr view, so it can't
+check for unresolved review threads. Check \`gh auth status\` and that the PR
+number and -R repo in the merge command are right, then retry.
 MSG
   exit 2
 }
@@ -363,9 +430,8 @@ threads=$(gh api graphql -f owner="$owner" -f name="$name" -F num="$num" -f quer
   query($owner:String!,$name:String!,$num:Int!){ repository(owner:$owner,name:$name){
     pullRequest(number:$num){ reviewThreads(first:100){ pageInfo{hasNextPage} nodes{
       id isResolved path line comments(first:1){ nodes{ author{login} body url } } } } } } }' \
-  -q '.data.repository.pullRequest.reviewThreads | if .pageInfo.hasNextPage then "MORE"
-      else .nodes[] | select(.isResolved|not)
-      | "\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | gsub("\n";" ") | .[:160])" end' 2>/dev/null) || {
+  -q '.data.repository.pullRequest.reviewThreads | (.nodes[] | select(.isResolved|not)
+      | "\(.id)\t\(.path):\(.line // "?")\t\(.comments.nodes[0].author.login)\t\(.comments.nodes[0].url)\n    \(.comments.nodes[0].body | gsub("\n";" ") | .[:160])"), (select(.pageInfo.hasNextPage) | "MORE")' 2>/dev/null) || {
   threads=""
   [ -z "$merge" ] || { cat >&2 <<MSG
 BLOCKED: pr-merge-gate couldn't query the review threads of $owner/$name#$num
@@ -375,15 +441,14 @@ retry the merge.
 MSG
   exit 2; }
 }
-if [ "$threads" = MORE ]; then
-  threads=""
-  [ -z "$merge" ] || { cat >&2 <<MSG
-BLOCKED: $owner/$name#$num has more than 100 review threads, more than
-pr-merge-gate reads, so it can't confirm they are all resolved. Check every
-thread on $url, then hand the merge to the owner.
-MSG
-  exit 2; }
-fi
+# A last line MORE (thread lines never are) means a second page exists.
+more=""
+case "$threads" in
+  MORE) more=1; threads="" ;;
+  *"
+MORE") more=1; threads=${threads%"
+MORE"} ;;
+esac
 if [ -n "$threads" ]; then
 cat >&2 <<MSG
 BLOCKED: $owner/$name#$num has unresolved review threads. Read each one, then
@@ -397,13 +462,21 @@ $threads
 MSG
 exit 2
 fi
+if [ -n "$more" ] && [ -n "$merge" ]; then
+cat >&2 <<MSG
+BLOCKED: $owner/$name#$num has more than 100 review threads, more than
+pr-merge-gate reads, so it can't confirm they are all resolved. Check every
+thread on $url, then hand the merge to the owner.
+MSG
+exit 2
+fi
 
 # Under the gate the only merge allowed names its repo with -R, and gh never
 # deletes a local branch then, so no worktree stands in its way: never touch one.
 [ -n "${PR_MERGE_GATE_PROTECTED_BASES:-}" ] && exit 0
 [ -n "$delete" ] || exit 0
 # The first worktree listed is the main checkout; only linked ones are removed.
-wts=$(git worktree list --porcelain 2>/dev/null) || exit 0
+wts=$(git -c core.fsmonitor=false -c core.hooksPath=/dev/null worktree list --porcelain 2>/dev/null) || exit 0
 main=$(printf '%s\n' "$wts" | sed -n '1s/^worktree //p')
 wt=$(printf '%s\n' "$wts" | awk -v ref="refs/heads/$head" '
   /^worktree / { path = substr($0, 10); n++ }
@@ -433,15 +506,15 @@ case "$(pwd -P)/" in "$(cd "$wt" 2>/dev/null && pwd -P || echo "$wt")"/*)
   why="$why
   this command runs inside it; rerun gh pr merge from $main" ;;
 esac
-dirty=$(git -C "$wt" status --porcelain --untracked-files=all --ignored 2>&1)
+dirty=$(git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$wt" status --porcelain --untracked-files=all --ignored 2>&1)
 [ -n "$dirty" ] && why="$why
   uncommitted changes, untracked or ignored files:
 $(printf '%s\n' "$dirty" | sed 's/^/    /')"
-unpushed=$(git -C "$wt" log --oneline HEAD --not --remotes 2>&1)
+unpushed=$(git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$wt" log --oneline HEAD --not --remotes 2>&1)
 [ -n "$unpushed" ] && why="$why
   unpushed commits:
 $(printf '%s\n' "$unpushed" | sed 's/^/    /')"
-[ -z "$why" ] && err=$(git worktree remove "$wt" 2>&1) && {
+[ -z "$why" ] && err=$(git -c core.fsmonitor=false -c core.hooksPath=/dev/null worktree remove "$wt" 2>&1) && {
   echo "pr-merge-gate: removed clean worktree $wt so --delete-branch can delete $head" >&2
   exit 0
 }
