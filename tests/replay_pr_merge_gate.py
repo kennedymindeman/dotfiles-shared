@@ -1,12 +1,11 @@
 """Replay real Bash calls from Claude Code transcripts through pr-merge-gate.sh.
 
-  python3 tests/replay_pr_merge_gate.py [--days 7] [--protected main]
+  python3 tests/replay_pr_merge_gate.py [--days 7]
 
 Reads ~/.claude/projects/**/*.jsonl, keeps Bash calls from the last --days, and
-runs each through the hook with PR_MERGE_GATE_PROTECTED_BASES set to
---protected. The hook runs in a throwaway directory with a fake git that does
-nothing and a fake gh that passes only `gh pr view` to the real gh, so a replay
-can't remove a worktree or write to GitHub. Lookups query GitHub read-only for
+runs each through the hook. The hook runs in a throwaway directory with a fake
+git that does nothing and a fake gh that passes only `gh pr view` to the real
+gh, so a replay can't change a checkout or write to GitHub. Lookups query GitHub read-only for
 each PR's current state, so verdicts reflect today's PRs, not the day of the
 call. Checks, review threads, and blind-review verdicts aren't looked up, so a
 merge that passes the form is counted as "lookup failed: check runs". Prints how many calls it
@@ -104,17 +103,12 @@ def fake_tools():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=7)
-    parser.add_argument("--protected", default="main")
     args = parser.parse_args()
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
         days=args.days
     )
     scratch = fake_tools()
-    env = {
-        **os.environ,
-        "PATH": f"{scratch}{os.pathsep}{os.environ['PATH']}",
-        "PR_MERGE_GATE_PROTECTED_BASES": args.protected,
-    }
+    env = {**os.environ, "PATH": f"{scratch}{os.pathsep}{os.environ['PATH']}"}
     reasons = collections.Counter()
     timings = {"merge": [], "other": []}
     total = 0
@@ -151,8 +145,6 @@ def main():
                 reasons["no blind-review verdict"] += 1
             elif "head commit the gate checked" in first or "pins --match-head-commit" in first:
                 reasons["merge not pinned to the checked head"] += 1
-            elif "inside quoted text" in first:
-                reasons["merge inside quoted text, no PR number"] += 1
             else:
                 reasons["unresolved review threads"] += 1
     shutil.rmtree(scratch)
