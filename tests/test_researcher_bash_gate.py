@@ -504,7 +504,7 @@ class ResearchFetchTests(unittest.TestCase):
             [
                 "uvx --no-config youtube_transcript_api -- -bcdefghijk",
                 (
-                    "curl -s -A curl/8.7.1 "
+                    "curl -q -s --proto =https --max-time 30 -A curl/8.7.1 "
                     "https://red.artemislena.eu/r/python/search?q=a+b%26c%3D1&sort=new"
                 ),
             ],
