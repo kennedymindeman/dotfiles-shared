@@ -503,6 +503,7 @@ def ffmpeg():
             "--from",
             "imageio-ffmpeg",
             "python",
+            "-I",
             "-c",
             "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())",
         ],
