@@ -9,7 +9,7 @@ nothing and a fake gh that passes only `gh pr view` to the real gh, so a replay
 can't remove a worktree or write to GitHub. Lookups query GitHub read-only for
 each PR's current state, so verdicts reflect today's PRs, not the day of the
 call. Checks, review threads, and blind-review verdicts aren't looked up, so a
-merge that passes the form is counted as "lookup failed: checks". Prints how many calls it
+merge that passes the form is counted as "lookup failed: check runs". Prints how many calls it
 would block, the top reasons, and hook latency. For real `gh pr merge` calls
 refused only for their form, it also looks up where they merged, to show how
 many real merges the canonical form would now refuse.

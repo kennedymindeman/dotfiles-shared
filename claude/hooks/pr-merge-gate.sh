@@ -1,7 +1,8 @@
 #!/bin/sh
 # PreToolUse hook (matcher: Bash). Allows a `gh pr merge`, into any base,
 # only when all three hold, and refuses (exit 2) naming the one that failed:
-#   1. no check on the PR's head is pending or failed (no checks at all passes);
+#   1. no check on the PR's head commit is pending or failed (no checks at all
+#      passes), read by that commit's SHA: its check runs and commit statuses;
 #   2. no review thread is unresolved (every page of threads is read);
 #   3. a blind-review verdict is recorded for the PR's current head commit: a
 #      PR comment by the repo's owner, a member, or a collaborator whose first
@@ -217,6 +218,15 @@ if not protected:
            "commas, or semicolons.")
 if re.search(r"[\n\r\\`$;|<>(){}*?\[\]~!]", cmd):
     noncanonical("it has a newline, backslash, backtick, or one of $ ; | < > ( ) { } * ? [ ] ~ !")
+quote = ""
+for i, ch in enumerate(cmd):  # no backslash got here, so quotes nest simply
+    if quote:
+        quote = "" if ch == quote else quote
+    elif ch in "'\"":
+        quote = ch
+    elif ch == "#" and (i == 0 or cmd[i - 1] in " \t&"):
+        noncanonical("a word starts with # outside quotes, and the shell drops "
+                     "the rest of the line as a comment")
 lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
 lexer.whitespace_split = True
 lexer.commenters = ""
@@ -290,61 +300,110 @@ case "$cmd" in *"gh pr merge"*) ;; *) [ -n "$canonical" ] || exit 0 ;; esac
 # number before a redirect (2>&1) is dropped so it isn't read as the PR. When
 # the words only appear inside one quoted word (bash -c "gh pr merge 7"), that
 # word is parsed as a command and nested=1; none=1 if no merge is found there.
+# run=1 when such a word is handed to something that executes it: a shell or
+# eval in its pipeline, or a command substitution in the word. fixpre and
+# fixpost are the agent's own command split where the head SHA goes to pin it.
 pr=""; repo=""; delete=""; auto=""; safe=""; match=""; nested=""; none=""
+run=""; fixpre=""; fixpost=""
 if out=$(python3 -I -c '
 import re, shlex, sys
 p = ";&|()<>\n"
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "mksh", "fish", "eval"}
+PIN = "0" * 40
 def lex(c):
     l = shlex.shlex(c, posix=True, punctuation_chars=p)
     l.whitespace, l.whitespace_split, l.commenters = " \t\r", True, ""
     return list(l)
+def sublex(w):
+    try:
+        return lex(w)
+    except ValueError:  # prose with an unbalanced quote: not a command
+        return []
 def find(t):
     return next((i for i in range(len(t)) if t[i:i + 3] == ["gh", "pr", "merge"]), None)
-c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", sys.argv[1].replace("\r", "").replace("\\\n", ""))
-t = lex(c)
-i, nested = find(t), ""
-for w in (t if i is None else ()):
-    if "gh pr merge" in w and find(lex(w)) is not None:
-        t, nested = lex(w), "1"
-        i = find(t)
-        break
-if i is None:
-    print("none=1")
-    sys.exit()
-v = dict(pr="", repo="", delete="", auto="", safe="", match="", nested=nested)
-args = iter(t[i + 3:])
-for a in args:
-    if set(a) <= set(p) or a.startswith("#"):
-        break
-    if a in ("-R", "--repo"):
-        v["repo"] = next(args, "")
-    elif a.startswith("--repo="):
-        v["repo"] = a[7:]
-    elif a == "--match-head-commit":
-        v["match"] = next(args, "")
-    elif a.startswith("--match-head-commit="):
-        v["match"] = a[20:]
-    elif a in ("--body", "--subject", "--author-email", "--body-file"):
-        next(args, "")
-    elif a.startswith("--delete-branch"):
-        v["delete"] = "?" if "=" in a or v["delete"] == "?" else "1"
-    elif a.split("=")[0] in ("--auto", "--disable-auto"):
-        v["auto"] = "1"
-    elif a.startswith("-") and not a.startswith("--"):
-        for j, ch in enumerate(a[1:], 2):
-            if ch in "RbtAF":
-                val = a[j:] or next(args, "")
-                if ch == "R":
-                    v["repo"] = val
+def stop(x):
+    return set(x) <= set(p) and (x == "&" or bool(re.search(r"[;\n]|&&|\|\|", x)))
+def runs(t, k):
+    if re.search(r"\$\(|`", t[k]):
+        return True
+    a = b = k
+    while a > 0 and not stop(t[a - 1]):
+        a -= 1
+    while b < len(t) and not stop(t[b]):
+        b += 1
+    return any(t[j].rsplit("/", 1)[-1] in SHELLS for j in range(a, b) if j != k)
+def parse(raw):
+    c = re.sub(r"(^|\s)\d+(?=[<>])", r"\1", raw.replace("\r", "").replace("\\n", ""))
+    t = lex(c)
+    i, nested, run = find(t), "", ""
+    if i is None:
+        quoted = [k for k, w in enumerate(t) if "gh pr merge" in w]
+        run = "1" if any(runs(t, k) for k in quoted) else ""
+        for k in quoted:
+            if find(sublex(t[k])) is not None:
+                t, nested = sublex(t[k]), "1"
+                i = find(t)
                 break
-            if ch == "d":
-                v["delete"] = "?" if "=" in a or v["delete"] == "?" else "1"
-    elif not a.startswith("-") and not v["pr"]:
-        v["pr"] = a
-if (i == 0 and not nested and v["delete"] == "1" and v["pr"].isdigit() and not v["repo"]
-        and not v["auto"] and not re.search("[$`]", c)
-        and not any(set(x) <= set(p) for x in t)):
-    v["safe"] = "1"
+    if i is None:
+        return dict(none="1", run=run)
+    v = dict(pr="", repo="", delete="", auto="", safe="", match="", nested=nested, run=run)
+    args = iter(t[i + 3:])
+    for a in args:
+        if set(a) <= set(p) or a.startswith("#"):
+            break
+        if a in ("-R", "--repo"):
+            v["repo"] = next(args, "")
+        elif a.startswith("--repo="):
+            v["repo"] = a[7:]
+        elif a == "--match-head-commit":
+            v["match"] = next(args, "")
+        elif a.startswith("--match-head-commit="):
+            v["match"] = a[20:]
+        elif a in ("--body", "--subject", "--author-email", "--body-file"):
+            next(args, "")
+        elif a.startswith("--delete-branch"):
+            v["delete"] = "?" if "=" in a or v["delete"] == "?" else "1"
+        elif a.split("=")[0] in ("--auto", "--disable-auto"):
+            v["auto"] = "1"
+        elif a.startswith("-") and not a.startswith("--"):
+            for j, ch in enumerate(a[1:], 2):
+                if ch in "RbtAF":
+                    val = a[j:] or next(args, "")
+                    if ch == "R":
+                        v["repo"] = val
+                    break
+                if ch == "d":
+                    v["delete"] = "?" if "=" in a or v["delete"] == "?" else "1"
+        elif not a.startswith("-") and not v["pr"]:
+            v["pr"] = a
+    if (i == 0 and not nested and v["delete"] == "1" and v["pr"].isdigit() and not v["repo"]
+            and not v["auto"] and not re.search("[$`]", c)
+            and not any(set(x) <= set(p) for x in t)):
+        v["safe"] = "1"
+    return v
+def fix(raw, v):
+    # Where the head SHA goes in the agent command: after a gh pr merge with
+    # the flag added, or in place of the pin value. A spot counts only if the
+    # result parses as this same merge pinned to that SHA.
+    if v["match"]:
+        flag = ""
+        spots = [m.span(1) for m in re.finditer(
+            r"--match-head-commit(?:[ \t]+|=)[\x27\"]?([^\s;&|()<>\x27\"]+)", raw)]
+    else:
+        flag = " --match-head-commit "
+        spots = [(m.end(), m.end()) for m in re.finditer("gh pr merge", raw)]
+    for a, b in spots:
+        pre, post = raw[:a] + flag, raw[b:]
+        try:
+            w = parse(pre + PIN + post)
+        except ValueError:
+            continue
+        if w.get("match") == PIN and all(w[k] == v[k] for k in ("pr", "repo", "nested")):
+            return pre, post
+    return "", ""
+v = parse(sys.argv[1])
+if not v.get("none"):
+    v["fixpre"], v["fixpost"] = fix(sys.argv[1], v)
 print(" ".join(k + "=" + shlex.quote(x) for k, x in v.items()))
 ' "$cmd" 2>/dev/null); then
   eval "$out"
@@ -372,9 +431,12 @@ if [ -n "$canonical" ] && { [ -n "$none$nested" ] || [ -z "$pr" ] || [ -z "$repo
   block "pr-merge-gate couldn't parse the merge it just checked, so the merge is refused."
 fi
 if [ -n "$none$nested" ] && [ -z "$canonical" ]; then
-  # The words sit inside quoted text. Only text handed to a program that can't
-  # run it (echo, grep, git commit, ...) passes unchecked; a merge whose PR
-  # number can be read is checked; anything else is refused.
+  # The words sit inside quoted text. Text that nothing in the command
+  # executes passes unchecked (rg "gh pr merge", a PR body, a commit message).
+  # Text handed to a shell or eval passes only as quoted text for a program
+  # that can't run it; a merge whose PR number can be read is checked; anything
+  # else is refused.
+  [ -n "$run" ] || exit 0
   formcheck 2>/dev/null && exit 0
   [ -z "$none" ] && [ -n "$pr" ] || block "this command runs gh pr merge from inside quoted text, and pr-merge-gate can't tell which PR it merges, so it is refused. Run the merge as a plain command: gh pr merge <number> -R <owner>/<repo> --match-head-commit <head sha> [flags]"
 fi
@@ -398,16 +460,33 @@ case "$sha" in *[!0123456789abcdef]*) cantread "head commit" "PR ${pr:-for this 
 [ -n "$owner" ] && [ -n "$name" ] && [ -n "$num" ] && [ ${#sha} -eq 40 ] \
   || cantread "head commit" "PR ${pr:-for this branch}" "$info"
 
-# 1. Checks. With --json, gh prints every check and exits 0, or exits 1 with
-# "no checks reported" when the head has none, which passes.
-checks=$(gh pr checks "$num" -R "$owner/$name" --json name,bucket \
-  -q '.[] | select(.bucket != "pass" and .bucket != "skipping") | "  \(.name) (\(.bucket))"' 2>&1)
-case $? in
-  0) [ -z "$checks" ] || block "$owner/$name#$num has checks that are pending or failed:
-$checks
-Wait for them to finish (gh pr checks $num -R $owner/$name --watch), fix any failure and push, then retry." ;;
-  *) case "$checks" in *"no checks reported"*) ;; *) cantread "checks" "$owner/$name#$num" "$checks" ;; esac ;;
-esac
+# 1. Checks on the head commit read above, by its SHA, so a later push can't
+# swap in another commit's checks: its check runs and its commit statuses,
+# every page of each at the largest page size. Each check run must be
+# completed as success, neutral, or skipped, and each status success; none at
+# all passes. gh prints one JSON object per page; anything else is unreadable.
+at="$owner/$name commit $sha"
+runs=$(gh api "repos/$owner/$name/commits/$sha/check-runs?per_page=100" --paginate 2>&1) \
+  || cantread "check runs" "$at" "$runs"
+failing=$(printf '%s' "$runs" | jq -rs '
+  if length > 0 and all(.[]; type == "object" and (.check_runs | type) == "array")
+  then .[].check_runs[]
+    | select(.status != "completed" or (.conclusion != "success"
+        and .conclusion != "neutral" and .conclusion != "skipped"))
+    | "  \(.name) (\(if .status == "completed" then .conclusion else .status end))"
+  else error("not a page of check runs") end' 2>&1) \
+  || cantread "check runs" "$at" "$failing"
+statuses=$(gh api "repos/$owner/$name/commits/$sha/status?per_page=100" --paginate 2>&1) \
+  || cantread "commit statuses" "$at" "$statuses"
+failed=$(printf '%s' "$statuses" | jq -rs '
+  if length > 0 and all(.[]; type == "object" and (.statuses | type) == "array")
+  then .[].statuses[] | select(.state != "success") | "  \(.context) (\(.state))"
+  else error("not a page of commit statuses") end' 2>&1) \
+  || cantread "commit statuses" "$at" "$failed"
+failing=$(printf '%s\n%s' "$failing" "$failed" | sed '/^$/d')
+[ -z "$failing" ] || block "$owner/$name#$num has checks on its head commit $sha that are pending or failed:
+$failing
+Wait for them to finish (gh pr checks $num -R $owner/$name --watch), fix any failure and push, then retry."
 
 # 2. Review threads, every page: --paginate follows endCursor until the last.
 threads=$(gh api graphql --paginate -f owner="$owner" -f name="$name" -F num="$num" -f query='
@@ -450,14 +529,19 @@ A verdict for an older commit doesn't count: a new commit needs a new review."
 
 # 4. Pin the merge to the head checked above: with --match-head-commit, GitHub
 # refuses the merge if the head moves after this check.
+# The refusal prints the agent's own command, pinned: the strict form takes
+# the pin at its end; otherwise it goes where the parser placed it, or, if the
+# parser found no spot, after the first gh pr merge or in place of the value.
 if [ "$match" != "$sha" ]; then
-  if [ -n "$canonical" ]; then fix="$cmd --match-head-commit $sha"
-  else fix="gh pr merge $num -R $owner/$name --match-head-commit $sha (plus your other flags)"
+  if [ -n "$canonical" ] && [ -z "$match" ]; then fix="$cmd --match-head-commit $sha"
+  elif [ -n "$fixpre$fixpost" ]; then fix="$fixpre$sha$fixpost"
+  elif [ -z "$match" ]; then fix="${cmd%%"gh pr merge"*}gh pr merge --match-head-commit $sha${cmd#*"gh pr merge"}"
+  else fix="${cmd%%"$match"*}$sha${cmd#*"$match"}"
   fi
   [ -z "$match" ] && block "this merge of $owner/$name#$num doesn't pin the head commit the gate checked. Run it with --match-head-commit, so GitHub refuses the merge if the head moves:
   $fix"
-  block "this merge of $owner/$name#$num pins --match-head-commit $match, but the PR's head is $sha. Pin the head the gate checked:
-  --match-head-commit $sha"
+  block "this merge of $owner/$name#$num pins --match-head-commit $match, but the PR's head is $sha. Run it pinned to the head the gate checked:
+  $fix"
 fi
 
 # Under the gate the only merge allowed names its repo with -R, and gh never
