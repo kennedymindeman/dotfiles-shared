@@ -43,3 +43,4 @@ These rules live in skills. When the situation comes up, load the skill and foll
 - Adding to or listing my to-do list (To-do list): `todo-list`.
 - Writing a PR or dispatching reviewers (PR authoring, Review lanes, Blind review): `pr-workflow`.
 - Before updating a package, dependency, database, OS, firmware, or app (Upgrades): `upgrades`.
+- Handing me a manual step with more than one action, or one with a login, credential, or value I type (Wizards): `wizards`.
