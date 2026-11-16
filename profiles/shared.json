@@ -36,6 +36,7 @@
     ".claude/hooks/researcher-bash-gate.py": "claude/hooks/researcher-bash-gate.py",
     ".claude/hooks/review-scratch-only.sh": "claude/hooks/review-scratch-only.sh",
     ".claude/hooks/skill-ascii.py": "claude/hooks/skill-ascii.py",
+    ".claude/hooks/uv-python.py": "claude/hooks/uv-python.py",
     ".claude/themes/catppuccin-mocha.json": "claude/themes/catppuccin-mocha.json"
   },
   "windows": {},
