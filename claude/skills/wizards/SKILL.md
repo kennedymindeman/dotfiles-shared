@@ -5,7 +5,7 @@ description: Builds a wizard that walks the user through steps only they can per
 
 # Wizards
 
-When a step I must do by hand has more than one action, or involves a login, credential, or value I type, build a wizard instead of a prose list or a bare command block. Write it as a uv Python script (Code style). Where the `mattpocock-skills:wizard` skill is installed, follow its step flow.
+When a step I must do by hand has more than one action, or involves a login, credential, or value I type, build a wizard instead of a prose list or a bare command block. Write it as a uv Python script (Code style).
 
 - The wizard checks preconditions, shows one step at a time, runs the commands, and verifies the result. Hand me the one command that launches it.
 - A single one-line command still gets the plain copy-pasteable block.
