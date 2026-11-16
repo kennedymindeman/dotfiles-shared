@@ -3,10 +3,13 @@
 
 Blocks (exit 2) a Bash call when any simple command in it runs a bare
 python, python3, python3.N, pip, pip3, or pip3.N, looking past leading
-VAR=value assignments, shell keywords, and the wrappers below. Allows
-interpreters named by a path, the words as arguments, everything when uv is
-not on PATH, and fails open on anything it cannot read. Stdlib only and
-Python 3.9 compatible, since it cannot assume uv or a modern Python.
+VAR=value assignments, redirections, shell keywords, and the wrappers below.
+Allows interpreters named by a path, the words as arguments, everything when
+uv is not on PATH, and fails open on anything it cannot read or that is too
+long to parse quickly. Stdlib only and Python 3.9 compatible, since it cannot
+assume uv or a modern Python.
+
+Known misses: backticks, "$(python3 ...)" inside double quotes, bash -c '...'.
 """
 
 import json
@@ -15,44 +18,93 @@ import shlex
 import shutil
 import sys
 
-BARE = re.compile(r"(python|python3(\.\d+)?|pip|pip3(\.\d+)?)")
+LIMIT = 64 * 1024  # shlex is quadratic on long tokens; allow anything longer
+BARE = re.compile(r"python|python3(\.[0-9]+)?|pip|pip3(\.[0-9]+)?")
 ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
-# Strip heredoc bodies so their lines are not read as commands.
 HEREDOC = re.compile(
-    r"(<<-?[ \t]*(['\"]?)([\w.-]+)\2[^\n]*\n).*?^[ \t]*\3[ \t]*$",
-    re.DOTALL | re.MULTILINE,
+    r"(?<!<)<<(?!<)-?[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|\\?([^\s<>;&|()'\"]+))"
 )
 PUNCT = ";&|()<>\n"
 KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{"}
-# Wrappers that run their argument as a command, with the options that take a value.
+# Wrapper: (option letters that take a value, option letters that only query,
+# positional arguments before the command).
 WRAPPERS = {
-    "env": {"-u", "-C"},
-    "time": set(),
-    "nohup": set(),
-    "command": set(),
-    "exec": {"-a"},
-    "sudo": {"-u", "-g", "-p", "-C", "-D", "-h", "-r", "-t", "-U"},
-    "xargs": {"-I", "-n", "-P", "-L", "-d", "-s", "-E", "-a"},
+    "env": ("uC", "", 0),
+    "time": ("", "", 0),
+    "nohup": ("", "", 0),
+    "command": ("", "vV", 0),
+    "exec": ("a", "", 0),
+    "sudo": ("ugpCDhrtU", "l", 0),
+    "xargs": ("InPLdsEa", "", 0),
+    "nice": ("n", "", 0),
+    "timeout": ("sk", "", 1),
+    "gtimeout": ("sk", "", 1),
 }
+PYTHON_FORMS = """\
+  uv run --no-project file.py
+  uv run --no-project python -c ...
+  uv run --no-project python -m module
+  uv run --no-project --with <package> python ..."""
+PIP_FORMS = """\
+  uv run --no-project --with <package> ...           one-off
+  uv pip install ...                                 inside a venv
+  uv tool install <tool>                             a CLI
+  uv run --no-project --with-requirements <file> ...  a requirements file"""
+PROJECT = (
+    "A project with its own environment: name its interpreter by path "
+    "(`.venv/bin/python`) or use its runner (`poetry run`, `tox`)."
+)
+
+
+def strip_heredocs(command):
+    """Drop heredoc bodies and their end lines, scanning each line once."""
+    kept, ends = [], []
+    for line in command.split("\n"):
+        if ends:
+            if line.strip() == ends[0]:
+                ends.pop(0)
+            continue
+        kept.append(line)
+        ends = [a or b or c for a, b, c in HEREDOC.findall(line)]
+    return "\n".join(kept)
+
+
+def strip_comments(text):
+    """Drop unquoted # comments up to the end of their line."""
+    out, quote, i = [], None, 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and quote != "'":
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        if quote:
+            quote = None if c == quote else quote
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and (not out or out[-1][-1] in " \t\n;&|()<>"):
+            end = text.find("\n", i)
+            i = len(text) if end < 0 else end
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def commands(command):
     """Yield the token list of each simple command."""
-    lexer = shlex.shlex(
-        HEREDOC.sub(r"\1", command), posix=True, punctuation_chars=PUNCT
-    )
+    text = strip_comments(strip_heredocs(command).replace("\\\n", ""))
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=PUNCT)
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     lexer.commenters = ""
-    current, comment = [], False
+    current = []
     for token in lexer:
-        if comment:
-            comment = token != "\n"
-        elif token and all(c in PUNCT for c in token) and token[0] not in "<>":
+        if token and all(c in PUNCT for c in token) and token[0] not in "<>":
+            if token[0] in "()" and len(current) == 1:
+                current = []  # a case pattern `python)` or function `python3()`
             yield current
             current = []
-        elif token.startswith("#") and not current:
-            comment = True
         else:
             current.append(token)
     yield current
@@ -63,55 +115,38 @@ def command_word(tokens):
     i = 0
     while i < len(tokens):
         word = tokens[i]
-        if ASSIGN.match(word) or word in KEYWORDS:
+        if word[:1] in ("<", ">") and all(c in PUNCT for c in word):
+            i += 2  # redirection and its target
+        elif (
+            word.isdigit() and tokens[i + 1 : i + 2] and tokens[i + 1][:1] in ("<", ">")
+        ):
+            i += 1  # the fd number of a redirection like 2>&1
+        elif ASSIGN.match(word) or word in KEYWORDS:
             i += 1
         elif word in WRAPPERS:
-            takes_value = WRAPPERS[word]
+            takes_value, query, positionals = WRAPPERS[word]
             i += 1
-            while i < len(tokens) and (
-                tokens[i].startswith("-") or (word == "env" and ASSIGN.match(tokens[i]))
-            ):
-                if word == "command" and tokens[i] in ("-v", "-V"):
+            while i < len(tokens) and tokens[i].startswith("-"):
+                flags = tokens[i][1:]
+                if not flags.startswith("-") and set(flags) & set(query):
                     return None
-                i += 2 if tokens[i] in takes_value else 1
+                i += 2 if len(flags) == 1 and flags in takes_value else 1
+            i += positionals
         else:
             return i, word
     return None
 
 
-def suggestion(word, args):
-    if word.startswith("pip"):
-        text = f"`{shlex.join(['uv', 'pip'] + args)}`"
-        packages = [a for a in args[1:] if not a.startswith("-")]
-        if args[:1] == ["install"] and packages:
-            text += f", or `uv run --with {','.join(packages)} ...` for a one-off"
-        return text
-    if args and args[0].endswith(".py"):
-        return f"`{shlex.join(['uv', 'run'] + args)}`"
-    # --no-project: a one-off inside a non-uv project leaves no .venv or uv.lock.
-    return f"`{shlex.join(['uv', 'run', '--no-project', 'python'] + args)}`"
-
-
 def check(command):
     """Return None when allowed, else the block message."""
+    if len(command) > LIMIT:
+        return None
     for tokens in commands(command):
         found = command_word(tokens)
-        if not found:
-            continue
-        i, word = found
-        if BARE.fullmatch(word):
-            args = tokens[i + 1 :]
-            # Show arguments only up to a redirection such as <<EOF or 2>&1.
-            for j, arg in enumerate(args):
-                if arg[:1] in ("<", ">") and all(c in PUNCT for c in arg):
-                    args = args[: j - 1 if j and args[j - 1].isdigit() else j]
-                    break
-            return (
-                f"Blocked: bare `{word}`. Run Python through uv: "
-                f"`{shlex.join([word] + args)}` -> {suggestion(word, args)}.\n"
-                "A project with its own environment: name its interpreter by path "
-                "(`.venv/bin/python`) or use its runner (`poetry run`, `tox`)."
-            )
+        if found and BARE.fullmatch(found[1]):
+            word = found[1]
+            forms = PIP_FORMS if word.startswith("pip") else PYTHON_FORMS
+            return f"Blocked: bare `{word}`. Run it through uv:\n{forms}\n{PROJECT}"
     return None
 
 
