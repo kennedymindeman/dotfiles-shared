@@ -230,9 +230,11 @@ metadata, issues, and pull requests must be suitable for public access.
 ## Validate changes
 
 ```sh
-python3 -B -m unittest discover -s tests -p 'test_*.py' -v
+uv run --no-project --python 3.12 python -B -m unittest discover -s tests -p 'test_*.py' -v
 sh tests/test_copilot_shell_defaults.sh
 ```
+
+Without uv, run the first line as `python3 -B -m unittest ...` on Python 3.11 or newer.
 
 On Windows, also run `./tests/test_copilot_shell_defaults.ps1` in PowerShell.
 CI runs the Python tests on Linux, macOS, and Windows, plus the native shell tests.
