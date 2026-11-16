@@ -88,7 +88,8 @@ def suggestion(word, args):
         return text
     if args and args[0].endswith(".py"):
         return f"`{shlex.join(['uv', 'run'] + args)}`"
-    return f"`{shlex.join(['uv', 'run', 'python'] + args)}`"
+    # --no-project: a one-off inside a non-uv project leaves no .venv or uv.lock.
+    return f"`{shlex.join(['uv', 'run', '--no-project', 'python'] + args)}`"
 
 
 def check(command):
@@ -100,9 +101,16 @@ def check(command):
         i, word = found
         if BARE.fullmatch(word):
             args = tokens[i + 1 :]
+            # Show arguments only up to a redirection such as <<EOF or 2>&1.
+            for j, arg in enumerate(args):
+                if arg[:1] in ("<", ">") and all(c in PUNCT for c in arg):
+                    args = args[: j - 1 if j and args[j - 1].isdigit() else j]
+                    break
             return (
                 f"Blocked: bare `{word}`. Run Python through uv: "
-                f"`{shlex.join([word] + args)}` -> {suggestion(word, args)}."
+                f"`{shlex.join([word] + args)}` -> {suggestion(word, args)}.\n"
+                "A project with its own environment: name its interpreter by path "
+                "(`.venv/bin/python`) or use its runner (`poetry run`, `tox`)."
             )
     return None
 

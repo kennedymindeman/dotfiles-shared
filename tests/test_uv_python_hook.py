@@ -117,6 +117,8 @@ class UvPythonHookTests(unittest.TestCase):
             "/usr/bin/python3 x.py",
             ".venv/bin/python -m pytest",
             "./venv/bin/pip install x",
+            "poetry run python -m pytest",
+            "tox -e py",
             "env -i /usr/bin/python3 -I x.py",
         ]:
             with self.subTest(command=command):
@@ -164,15 +166,26 @@ class UvPythonHookTests(unittest.TestCase):
 
     def test_message_shows_uv_form(self):
         for command, expected in [
-            ("python3 -m unittest", "`uv run python -m unittest`"),
+            ("python3 -m unittest", "`uv run --no-project python -m unittest`"),
+            ("python3 -c 'print(1)'", "`uv run --no-project python -c 'print(1)'`"),
+            ("python3 - <<'EOF'\nprint(1)\nEOF", "`uv run --no-project python -`."),
+            ("python3 -m x 2>&1 | tail", "`uv run --no-project python -m x`."),
             ("python3 x.py", "`uv run x.py`"),
             ("pip install x", "`uv pip install x`"),
             ("pip install x", "`uv run --with x ...`"),
-            ("python3", "`uv run python`"),
+            ("python3", "`uv run --no-project python`"),
         ]:
             with self.subTest(command=command, expected=expected):
                 stderr = self.assertBlocked(command, command.split()[0])
                 self.assertIn(expected, stderr)
+
+    def test_message_names_project_tooling(self):
+        stderr = self.assertBlocked("python3 -m pytest", "python3")
+        self.assertIn("`.venv/bin/python`", stderr)
+        self.assertIn("`poetry run`, `tox`", stderr)
+
+    def test_blocks_with_empty_argument(self):
+        self.assertBlocked("python3 '' x.py", "python3")
 
 
 if __name__ == "__main__":
