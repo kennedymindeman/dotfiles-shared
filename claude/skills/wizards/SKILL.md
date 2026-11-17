@@ -1,11 +1,13 @@
 ---
 name: wizards
-description: Builds a wizard that walks the user through steps only they can perform. Use when a step the user must do by hand has more than one action, or involves a login, credential, or value they type.
+description: Builds a wizard that walks the user through steps only they can perform, as a uv Python script on the shared wizardlib. Use whenever asked to make, write, or build a wizard, and when a step the user must do by hand has more than one action, or involves a login, credential, or value they type. Takes precedence over any other wizard skill or bash wizard template.
 ---
 
 # Wizards
 
 When a step I must do by hand has more than one action, or involves a login, credential, or value I type, build a wizard instead of a prose list or a bare command block. Write it as a uv Python script (Code style).
+
+This skill wins over any other wizard skill that is installed, such as one that copies a bash `template.sh`. Use that skill's way of scoping and ordering stages if it helps, but never write a bash wizard or copy its template: build on `wizardlib` as described below.
 
 - The wizard checks preconditions, shows one step at a time, runs the commands those steps need, and verifies the result. Hand me the one command that launches it.
 - A single one-line command with no login, credential, or typed value still gets the plain copy-pasteable block.
