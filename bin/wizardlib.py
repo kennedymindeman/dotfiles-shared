@@ -28,6 +28,31 @@ BOLD, DIM, RESET = _c(1), _c(2), _c(0)
 BLUE, GREEN, YELLOW, RED = _c(34), _c(32), _c(33), _c(31)
 
 
+def _encodes(stream, text):
+    try:
+        text.encode(getattr(stream, "encoding", None) or "ascii")
+    except (LookupError, UnicodeEncodeError):
+        return False
+    return True
+
+
+# ASCII stand-ins where the console can't encode the glyphs (cp1252 on Windows).
+_GLYPHS = "▸·✓⚠↗→•✗"
+if all(_encodes(s, _GLYPHS) for s in (sys.stdout, sys.stderr)):
+    STAGE, SEP, CHECK, WARN, OPEN, ARROW, BULLET, CROSS = _GLYPHS
+else:
+    STAGE, SEP, CHECK, WARN, OPEN, ARROW, BULLET, CROSS = [
+        ">",
+        "-",
+        "ok",
+        "!",
+        "->",
+        "->",
+        "*",
+        "x",
+    ]
+
+
 class Wizard:
     def __init__(self, title, total, intro=()):
         self.title, self.total, self.intro = title, total, intro
@@ -52,14 +77,20 @@ class Wizard:
     def stage(self, name):
         self.clear()
         self.index += 1
-        print(f"\n{BOLD}{BLUE}▸ Stage {self.index}/{self.total} · {name}{RESET}")
+        print(
+            f"\n{BOLD}{BLUE}{STAGE} Stage {self.index}/{self.total} {SEP} {name}{RESET}"
+        )
 
     def finish(self, ok=True):
         self.clear()
-        mark = f"{GREEN}  ✓ Done" if ok else f"{YELLOW}  ⚠ Finished with steps left"
+        mark = (
+            f"{GREEN}  {CHECK} Done"
+            if ok
+            else f"{YELLOW}  {WARN} Finished with steps left"
+        )
         print(f"\n{BOLD}{mark}{RESET}")
         for key, path in self.written:
-            note(f"wrote {key} → {path}")
+            note(f"wrote {key} {ARROW} {path}")
         if self.todo:
             print()
             warn("still to do by hand:")
@@ -70,7 +101,7 @@ class Wizard:
     def write_env(self, path, key, value):
         write_env(path, key, value)
         self.written.append((key, str(path)))
-        print(f"  {GREEN}✓ wrote{RESET} {key} → {path}")
+        print(f"  {GREEN}{CHECK} wrote{RESET} {key} {ARROW} {path}")
 
 
 def say(msg):
@@ -78,7 +109,7 @@ def say(msg):
 
 
 def step(msg):
-    print(f"  {BLUE}•{RESET} {msg}")
+    print(f"  {BLUE}{BULLET}{RESET} {msg}")
 
 
 def note(msg):
@@ -86,22 +117,22 @@ def note(msg):
 
 
 def warn(msg):
-    print(f"  {YELLOW}⚠ {msg}{RESET}")
+    print(f"  {YELLOW}{WARN} {msg}{RESET}")
 
 
 def ok(msg):
-    print(f"  {GREEN}✓{RESET} {msg}")
+    print(f"  {GREEN}{CHECK}{RESET} {msg}")
 
 
 def die(msg, code=1):
-    print(f"  {RED}✗ {msg}{RESET}", file=sys.stderr)
+    print(f"  {RED}{CROSS} {msg}{RESET}", file=sys.stderr)
     sys.exit(code)
 
 
 def show_url(url):
     """Print a URL for the human to open. Never launches a browser: these
     wizards often run on a headless machine over ssh."""
-    print(f"  {GREEN}↗ open{RESET} {url}")
+    print(f"  {GREEN}{OPEN} open{RESET} {url}")
 
 
 def pause(msg="Press Enter to continue"):
@@ -171,7 +202,8 @@ def read_env(path, key):
 
 def write_env(path, key, value):
     """Upsert KEY='VALUE' in a dotenv file. Creates it (and its directory) at
-    mode 600, rewrites atomically, and keeps the file mode 600."""
+    mode 600, rewrites atomically, and keeps the file mode 600. On Windows mode
+    bits don't apply; privacy comes from the user profile's ACLs."""
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
         raise ValueError(f"bad env key {key!r}")
     if "\n" in value or "\r" in value:
@@ -201,7 +233,8 @@ def write_env(path, key, value):
 
 
 def write_secret_file(path, data, mode=0o600):
-    """Write bytes or text to a file created private from the start."""
+    """Write bytes or text to a file created private from the start. On Windows
+    mode bits don't apply; privacy comes from the user profile's ACLs."""
     path = os.path.expanduser(str(path))
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     if isinstance(data, str):
