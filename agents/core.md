@@ -1,6 +1,6 @@
 # Code style
 Prefer minimal solutions: YAGNI, stdlib first, shortest working diff. No unrequested abstractions or scaffolding "for later".
-Write scripts, wizards included, in Python as uv single-file scripts: `#!/usr/bin/env -S uv run --script` with an inline `# /// script` block that pins `requires-python` and dependencies. Don't write bash scripts; one-line shell commands are fine. Where uv isn't installed, use stdlib-only Python. Build command-line interfaces with click, and use rich for terminal output (color, panels, tables, progress) in anything I run by hand.
+Write scripts, wizards included, in Python as uv single-file scripts: `#!/usr/bin/env -S uv run --script` with an inline `# /// script` block that pins `requires-python` and dependencies. Don't write bash scripts; one-line shell commands are fine. Where uv isn't installed, use stdlib-only Python. Build command-line interfaces with click, and use rich for terminal output (color, panels, tables, progress) in anything I run by hand, except wizards, which use `wizardlib` (Wizards).
 Run Python through uv: `uv run file.py`, `uv run --python 3.12 python -m ...`, `uv run --with <pkg> python ...`, and `uv pip` or `uv tool` for installs. Don't call bare `python`, `python3`, or `pip`: the system Python is old and differs per machine. Two exceptions: a project with its own Python tooling (a venv, Poetry, tox, a documented command) keeps that tooling, and where uv isn't installed, use the system Python. For a one-off `uv run` inside a project that doesn't use uv, add `--no-project` so it leaves no `.venv` or `uv.lock` behind.
 
 # Shell quoting
@@ -44,4 +44,4 @@ These rules live in skills. When the situation comes up, load the skill and foll
 - Adding to or listing my to-do list (To-do list): `todo-list`.
 - Writing a PR or dispatching reviewers (PR authoring, Review lanes, Blind review): `pr-workflow`.
 - Before updating a package, dependency, database, OS, firmware, or app (Upgrades): `upgrades`.
-- Handing me a manual step with more than one action, or one with a login, credential, or value I type (Wizards): `wizards`.
+- Building any wizard, or handing me a manual step with more than one action, or one with a login, credential, or value I type (Wizards): `wizards`. Every wizard is a uv Python script built on `wizardlib` (`~/.config/dotfiles/wizardlib.py`), never bash. If another wizard skill is loaded or invoked, even by its slash command, follow only its scoping questions: don't copy its template, write bash, or run its bash checks.
