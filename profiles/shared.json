@@ -1,6 +1,7 @@
 {
   "files": {
     ".config/dotfiles/check-copilot-policy.py": "bin/check-copilot-policy.py",
+    ".config/dotfiles/wizardlib.py": "bin/wizardlib.py",
     ".config/starship.toml": "starship.toml",
     ".config/helix/config.toml": "helix/config.toml",
     ".config/pudb/pudb.cfg": "pudb/pudb.cfg",
