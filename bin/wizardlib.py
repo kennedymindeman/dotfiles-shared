@@ -11,16 +11,22 @@ Stdlib only. Input comes from input()/getpass(), so tests can drive a wizard by
 patching builtins.input and getpass.getpass.
 """
 
+from __future__ import annotations
+
 import getpass
 import os
 import re
 import sys
 import tempfile
+from collections.abc import Iterable
+from typing import NoReturn, Union
 
 _TTY = sys.stdout.isatty()
 
+StrPath = Union[str, "os.PathLike[str]"]
 
-def _c(code):
+
+def _c(code: int) -> str:
     return f"\033[{code}m" if _TTY and os.environ.get("TERM") != "dumb" else ""
 
 
@@ -28,7 +34,7 @@ BOLD, DIM, RESET = _c(1), _c(2), _c(0)
 BLUE, GREEN, YELLOW, RED = _c(34), _c(32), _c(33), _c(31)
 
 
-def _encodes(stream, text):
+def _encodes(stream: object, text: str) -> bool:
     try:
         text.encode(getattr(stream, "encoding", None) or "ascii")
     except (LookupError, UnicodeEncodeError):
@@ -39,7 +45,7 @@ def _encodes(stream, text):
 # ASCII stand-ins where the console can't encode the glyphs (cp1252 on Windows).
 _GLYPHS = "▸·✓⚠↗→•✗"
 if all(_encodes(s, _GLYPHS) for s in (sys.stdout, sys.stderr)):
-    STAGE, SEP, CHECK, WARN, OPEN, ARROW, BULLET, CROSS = _GLYPHS
+    STAGE, SEP, CHECK, WARN, OPEN, ARROW, BULLET, CROSS = list(_GLYPHS)
 else:
     STAGE, SEP, CHECK, WARN, OPEN, ARROW, BULLET, CROSS = [
         ">",
@@ -54,18 +60,19 @@ else:
 
 
 class Wizard:
-    def __init__(self, title, total, intro=()):
+    def __init__(self, title: str, total: int, intro: Iterable[str] = ()) -> None:
         self.title, self.total, self.intro = title, total, intro
         self.index = 0
-        self.written = []  # (key, path) pairs written this run
-        self.todo = []  # things left for the human
+        # (key, path) pairs written this run
+        self.written: list[tuple[str, str]] = []
+        self.todo: list[str] = []  # things left for the human
 
     # screens
-    def clear(self):
+    def clear(self) -> None:
         if _TTY:
             print("\033[2J\033[3J\033[H", end="")
 
-    def banner(self):
+    def banner(self) -> None:
         self.clear()
         print(f"\n{BOLD}{BLUE}  {self.title}{RESET}")
         print(f"{DIM}  {self.total} stages{RESET}\n")
@@ -74,14 +81,14 @@ class Wizard:
         print(f"{DIM}  Stop any time with Ctrl-C and re-run later.{RESET}")
         pause("Ready to start?")
 
-    def stage(self, name):
+    def stage(self, name: str) -> None:
         self.clear()
         self.index += 1
         print(
             f"\n{BOLD}{BLUE}{STAGE} Stage {self.index}/{self.total} {SEP} {name}{RESET}"
         )
 
-    def finish(self, ok=True):
+    def finish(self, ok: bool = True) -> None:
         self.clear()
         mark = (
             f"{GREEN}  {CHECK} Done"
@@ -98,51 +105,51 @@ class Wizard:
                 note(f"  - {item}")
         print()
 
-    def write_env(self, path, key, value):
+    def write_env(self, path: StrPath, key: str, value: str) -> None:
         write_env(path, key, value)
         self.written.append((key, str(path)))
         print(f"  {GREEN}{CHECK} wrote{RESET} {key} {ARROW} {path}")
 
 
-def say(msg):
+def say(msg: str) -> None:
     print(f"  {msg}")
 
 
-def step(msg):
+def step(msg: str) -> None:
     print(f"  {BLUE}{BULLET}{RESET} {msg}")
 
 
-def note(msg):
+def note(msg: str) -> None:
     print(f"  {DIM}{msg}{RESET}")
 
 
-def warn(msg):
+def warn(msg: str) -> None:
     print(f"  {YELLOW}{WARN} {msg}{RESET}")
 
 
-def ok(msg):
+def ok(msg: str) -> None:
     print(f"  {GREEN}{CHECK}{RESET} {msg}")
 
 
-def die(msg, code=1):
+def die(msg: str, code: int = 1) -> NoReturn:
     print(f"  {RED}{CROSS} {msg}{RESET}", file=sys.stderr)
     sys.exit(code)
 
 
-def show_url(url):
+def show_url(url: str) -> None:
     """Print a URL for the human to open. Never launches a browser: these
     wizards often run on a headless machine over ssh."""
     print(f"  {GREEN}{OPEN} open{RESET} {url}")
 
 
-def pause(msg="Press Enter to continue"):
+def pause(msg: str = "Press Enter to continue") -> None:
     try:
         input(f"  {DIM}{msg}{RESET} ")
     except EOFError:
         die("Stopped: input closed. Re-run any time.")
 
 
-def confirm(question):
+def confirm(question: str) -> bool:
     try:
         reply = input(f"  {YELLOW}? {question} [y/N]{RESET} ")
     except EOFError:
@@ -150,7 +157,7 @@ def confirm(question):
     return reply.strip().lower().startswith("y")
 
 
-def ask(prompt, current=None, required=True):
+def ask(prompt: str, current: str | None = None, required: bool = True) -> str:
     """Visible input. Enter keeps `current` when one is given."""
     hint = f" {DIM}[Enter keeps current]{RESET}" if current else ""
     while True:
@@ -165,7 +172,7 @@ def ask(prompt, current=None, required=True):
         warn("a value is required")
 
 
-def ask_secret(prompt, current=None):
+def ask_secret(prompt: str, current: str | None = None) -> str:
     """Hidden input. Enter keeps `current` when one is given."""
     hint = " [Enter keeps current]" if current else ""
     while True:
@@ -180,7 +187,7 @@ def ask_secret(prompt, current=None):
         warn("a value is required")
 
 
-def read_env(path, key):
+def read_env(path: StrPath, key: str) -> str | None:
     """Current value of KEY in a dotenv file, or None. Undoes write_env's quoting."""
     try:
         with open(path) as f:
@@ -200,7 +207,7 @@ def read_env(path, key):
     return value
 
 
-def write_env(path, key, value):
+def write_env(path: StrPath, key: str, value: str) -> None:
     """Upsert KEY='VALUE' in a dotenv file. Creates it (and its directory) at
     mode 600, rewrites atomically, and keeps the file mode 600. On Windows mode
     bits don't apply; privacy comes from the user profile's ACLs."""
@@ -232,7 +239,7 @@ def write_env(path, key, value):
         raise
 
 
-def write_secret_file(path, data, mode=0o600):
+def write_secret_file(path: StrPath, data: str | bytes, mode: int = 0o600) -> None:
     """Write bytes or text to a file created private from the start. On Windows
     mode bits don't apply; privacy comes from the user profile's ACLs."""
     path = os.path.expanduser(str(path))
