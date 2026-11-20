@@ -43,7 +43,9 @@
     ".claude/hooks/uv-python.py": "claude/hooks/uv-python.py",
     ".claude/themes/catppuccin-mocha.json": "claude/themes/catppuccin-mocha.json"
   },
-  "windows": {},
+  "windows": {
+    "AppData/Local/Microsoft/Windows Terminal/Fragments/dotfiles/catppuccin-mocha.json": "windows-terminal/catppuccin-mocha.json"
+  },
   "darwin": {
     "Library/Application Support/com.mitchellh.ghostty/config": "ghostty/config"
   }

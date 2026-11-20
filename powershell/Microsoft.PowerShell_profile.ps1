@@ -225,7 +225,8 @@ function open { if ($args.Count) { Start-Process @args } else { Start-Process . 
 #  starship prompt ($env:STARSHIP_CONFIG is set by link.ps1, no hardcoded path)
 # -------------------------------
 $machineNamePath = Join-Path $HOME '.machine-name'
-if (-not [Environment]::GetEnvironmentVariable('MACHINE_NAME'))
+# Only over SSH: a local prompt starts at the directory, not the hostname.
+if ($env:SSH_CONNECTION -and -not [Environment]::GetEnvironmentVariable('MACHINE_NAME'))
 {
     $machineName = if (Test-Path $machineNamePath)
     {
