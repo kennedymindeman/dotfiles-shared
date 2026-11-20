@@ -14,7 +14,8 @@ $python\
 $status\
 $character"""
 
-# The shell resolves MACHINE_NAME from an explicit environment value, then
+# Shown only over SSH: the shell leaves MACHINE_NAME unset in a local session.
+# Over SSH it resolves from an explicit environment value, then
 # ~/.machine-name, then the system hostname.
 [env_var.MACHINE_NAME]
 format = "[$env_value]($style) "

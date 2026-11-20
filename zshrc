@@ -14,8 +14,10 @@ setopt EXTENDED_HISTORY HIST_IGNORE_DUPS HIST_REDUCE_BLANKS HIST_IGNORE_SPACE IN
 # audit (~16ms); run `compinit` by hand after installing something new to fpath.
 autoload -Uz compinit && compinit -C
 
-# Use a friendly per-machine name when configured, otherwise keep the hostname.
-if [[ -z ${MACHINE_NAME:-} ]]; then
+# Name the machine in the prompt only over SSH; a local prompt starts at the
+# directory. Use a friendly per-machine name when configured, otherwise the
+# hostname. An explicit MACHINE_NAME always shows.
+if [[ -z ${MACHINE_NAME:-} && -n ${SSH_CONNECTION:-} ]]; then
   if [[ -r "$HOME/.machine-name" ]]; then
     IFS= read -r MACHINE_NAME < "$HOME/.machine-name"
   fi
