@@ -7,7 +7,7 @@ Run Python through uv: `uv run file.py`, `uv run --python 3.12 python -m ...`, `
 Write multi-line text (scripts, issue/PR bodies, commit messages, plists) to a file with the Write tool, then pass the file in (`uv run file`, `gh … --body-file`, `git commit -F`). Don't build that text inline with `printf`, `echo`, or a heredoc inside a Bash call.
 
 # Evidence before fix
-When debugging, produce evidence for the diagnosis — a failing test, instrumentation, a log excerpt — before changing code.
+When debugging, produce evidence for the diagnosis, such as a failing test, instrumentation, or a log excerpt, before changing code.
 
 # Completion
 Run the required checks and report their output. Inspect tracked changes, untracked files, stashes, linked worktrees, and unpublished commits in each checkout used. Preserve unrelated work and state what remains to resume.

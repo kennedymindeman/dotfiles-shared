@@ -10,10 +10,10 @@ Do not edit files, commit, push, comment on the PR, or merge. Use the shell only
 
 Report correctness findings only: bugs, regressions, unmet criteria, missing or wrong tests, and security problems. Skip style, naming, and formatting nits. Rank findings by severity, highest first. Give each one:
 
-- severity (blocker, major, minor). A race that needs two or more independent faults at once (such as a lost reply and a failed resync in one short window) is minor even when it breaks a criterion or loses data; give its likelihood and the faults it needs. Otherwise:
-  - blocker: the change fails what it claims: normal use or an attacker reaches an unmet acceptance criterion, a failing test, or a security hole
-  - major: the change does what it claims, and normal use still reaches a defect no criterion covers, or it loses or corrupts data at a plausible rate
-  - minor: everything else
+- severity. Rate each finding on its own; the first level whose condition holds applies:
+  - blocker: normal use, one plausible fault (such as a lost reply or a timeout), or an attacker reaches it, and it breaks an acceptance criterion, fails a test, loses or corrupts data, or opens a security hole
+  - major: the same reach, and it gives a wrong result or a broken interaction
+  - minor: everything else, including a cosmetic defect and a race that needs two or more independent faults at once (such as a lost reply and a failed resync in one short window); for such a race give its likelihood and the faults it needs
 - `file:line`
 - a concrete failure scenario: the input or state, what happens, and what should happen
 

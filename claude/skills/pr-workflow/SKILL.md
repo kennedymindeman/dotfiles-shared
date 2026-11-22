@@ -13,4 +13,4 @@ When a diff is larger than you'd read line by line, or handles input someone els
 Give reviewers the artifact and acceptance criteria without expected findings.
 
 # Failure model
-When a client holds state that a server also holds, the build brief states the failure model before review round 1: each request ends ok, refused, or reply lost; one request at a time per resource; resync from the server after any unknown outcome; one source of truth for each list.
+When a client holds state that a server also holds, the build brief states the failure model before review round 1: each request ends ok, refused, or reply lost; one request at a time per resource; resync from the server after a reply is lost; one source of truth for each list.
