@@ -24,7 +24,10 @@ Generate leads with `ruff check --no-cache --select S,B`, `semgrep scan --metric
 
 Report correctness findings only: bugs, regressions, unmet criteria, missing or wrong tests, and security problems. Skip style, naming, and formatting nits. Rank findings by severity, highest first. Give each one:
 
-- severity (blocker, major, minor)
+- severity. Rate each finding on its own; the first level whose condition holds applies:
+  - blocker: normal use, one plausible fault (such as a lost reply or a timeout), or an attacker reaches it, and it breaks an acceptance criterion, fails a test, loses or corrupts data, or opens a security hole
+  - major: the same reach, and it gives a wrong result or a broken interaction
+  - minor: everything else, including a cosmetic defect and a race that needs two or more independent faults at once (such as a lost reply and a failed resync in one short window); for such a race give its likelihood and the faults it needs
 - `file:line`
 - a concrete failure scenario: the input or state, what happens, and what should happen
 - Confirmed (probe path and its failing output) or Unconfirmed (why no probe could show it)

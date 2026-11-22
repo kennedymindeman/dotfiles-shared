@@ -7,7 +7,7 @@ Run Python through uv: `uv run file.py`, `uv run --python 3.12 python -m ...`, `
 Write multi-line text (scripts, issue/PR bodies, commit messages, plists) to a file with the Write tool, then pass the file in (`uv run file`, `gh … --body-file`, `git commit -F`). Don't build that text inline with `printf`, `echo`, or a heredoc inside a Bash call.
 
 # Evidence before fix
-When debugging, produce evidence for the diagnosis — a failing test, instrumentation, a log excerpt — before changing code.
+When debugging, produce evidence for the diagnosis, such as a failing test, instrumentation, or a log excerpt, before changing code.
 
 # Completion
 Run the required checks and report their output. Inspect tracked changes, untracked files, stashes, linked worktrees, and unpublished commits in each checkout used. Preserve unrelated work and state what remains to resume.
@@ -42,6 +42,6 @@ Write like you are talking to a colleague across a desk. Use concrete names, eve
 # Skills for situations
 These rules live in skills. When the situation comes up, load the skill and follow it:
 - Adding to or listing my to-do list (To-do list): `todo-list`.
-- Writing a PR or dispatching reviewers (PR authoring, Review lanes, Blind review): `pr-workflow`.
+- Writing a PR, dispatching reviewers, or writing a build brief for work where a client and a server both hold the same state (PR authoring, Review lanes, Blind review, Failure model): `pr-workflow`.
 - Before updating a package, dependency, database, OS, firmware, or app (Upgrades): `upgrades`.
 - Building any wizard, or handing me a manual step with more than one action, or one with a login, credential, or value I type (Wizards): `wizards`. Every wizard is a uv Python script built on `wizardlib` (`~/.config/dotfiles/wizardlib.py`), never bash. If another wizard skill is loaded or invoked, even by its slash command, follow only its scoping questions: don't copy its template, write bash, or run its bash checks.
