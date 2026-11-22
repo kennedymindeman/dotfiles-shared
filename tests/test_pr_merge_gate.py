@@ -19,25 +19,39 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 OLD_SHA = "fedcba9876543210fedcba9876543210fedcba98"
 VERDICT = f"Blind review: pass {SHA}"
 PIN = f" --match-head-commit {SHA}"
+PR_FILTER = '.html_url + " " + .head.ref + " " + .head.sha'
 
 # Stands in for gh, printing what gh's -q filter would. Logs "<cwd>|<args>"
 # per call. Each GH_STUB_* fact set to FAIL makes that lookup exit 1.
-# `pr view` answers "<url><N> feature <head sha>" (or GH_STUB_VIEW_OUT verbatim
-# when that is set), `api graphql` the unresolved threads, and `api repos/...`
-# the comments' first lines. The commit's check runs and statuses have no -q
-# filter: they answer GH_STUB_RUNS and GH_STUB_STATUSES as raw JSON pages.
+# `api repos/.../pulls/N` answers "<url><N> feature <head sha>" (or
+# GH_STUB_VIEW_OUT verbatim when that is set), `api graphql` the unresolved
+# threads, and `api repos/...` the comments' first lines. The commit's check
+# runs and statuses have no -q filter: they answer GH_STUB_RUNS and
+# GH_STUB_STATUSES as raw JSON pages, as the compare answers GH_STUB_COMPARE
+# and the list of PRs based on a branch GH_STUB_STACKED.
 # GH_STUB_THREADS_PAGE2 reaches only a caller that paginates on $endCursor, and
-# GH_STUB_RUNS_PAGE2 and GH_STUB_STATUSES_PAGE2 only one that passes --paginate.
+# GH_STUB_RUNS_PAGE2, GH_STUB_STATUSES_PAGE2, and GH_STUB_COMPARE_PAGE2 only
+# one that passes --paginate. GH_STUB_VIEW=RATE fails the PR read with a rate
+# limit.
 STUB = """#!/bin/sh
 printf '%s|%s\\n' "$PWD" "$*" >> "$GH_STUB_LOG"
 printf '%s\\036' "$PWD" "$@" >> "$GH_STUB_ARGS"
 printf '\\035' >> "$GH_STUB_ARGS"
 case "$1 $2" in
-  "pr view")
-    [ "$GH_STUB_VIEW" = FAIL ] && { echo "no pull requests found" >&2; exit 1; }
+  "api repos/"*"/pulls/"*)
+    [ "$GH_STUB_VIEW" = FAIL ] && { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    [ "$GH_STUB_VIEW" = RATE ] && { echo "gh: API rate limit exceeded (HTTP 403)" >&2; exit 1; }
     [ -n "${GH_STUB_VIEW_OUT+set}" ] && { printf '%s' "$GH_STUB_VIEW_OUT"; exit 0; }
-    sel=$3; case "$sel" in ''|-*|*[!0-9]*) sel=7 ;; esac
+    sel=${2##*/}; case "$sel" in ''|*[!0-9]*) sel=7 ;; esac
     printf '%s%s feature %s\\n' "$GH_STUB_URL" "$sel" "$GH_STUB_SHA" ;;
+  "api repos/"*"/pulls?"*)
+    [ "$GH_STUB_STACKED" = FAIL ] && { echo "HTTP 502" >&2; exit 1; }
+    printf '%s' "${GH_STUB_STACKED:-[]}" ;;
+  "api repos/"*"/compare/"*)
+    [ "$GH_STUB_COMPARE" = FAIL ] && { echo "HTTP 404" >&2; exit 1; }
+    [ "$GH_STUB_COMPARE" = RATE ] && { echo "API rate limit exceeded" >&2; exit 1; }
+    printf '%s' "$GH_STUB_COMPARE"
+    case "$*" in *--paginate*) printf '%s' "$GH_STUB_COMPARE_PAGE2" ;; esac ;;
   "api graphql")
     [ "$GH_STUB_THREADS" = FAIL ] && { echo "API rate limit exceeded" >&2; exit 1; }
     printf '%s' "$GH_STUB_THREADS"
@@ -275,7 +289,7 @@ class PrMergeGateTests(unittest.TestCase):
         return [c for c in lines if c.startswith(("/|", f"{self.dir}|"))]
 
     def pr_lookups(self):
-        return [c for c in self.gh_calls() if "|pr view" in c]
+        return [c for c in self.gh_calls() if "/pulls/" in c]
 
     def gh_argvs(self):
         """Every gh call as its full argument list, cwd first."""
@@ -671,11 +685,11 @@ class PrMergeGateTests(unittest.TestCase):
         calls = self.gh_argvs()
         self.assertEqual([c[0] for c in calls], [str(self.dir)] * 5)
         view, runs, statuses, threads, comments = (c[1:] for c in calls)
+        # The PR over REST, outside the GraphQL budget.
         self.assertEqual(
             view,
-            ["pr", "view", "7", "-R", "o/r", "--json", "url,headRefName,headRefOid",
-             "-q", '.url + " " + .headRefName + " " + .headRefOid'],
-        )  # fmt: skip
+            ["api", "repos/o/r/pulls/7", "-q", PR_FILTER],
+        )
         # Later calls name the repo from the PR's url.
         # Checks are read by the head SHA from pr view, never by PR number, at
         # the largest page size, every page.
@@ -734,6 +748,131 @@ class PrMergeGateTests(unittest.TestCase):
             [VERDICT, "note", "x"],
         )
 
+    def test_verdict_survives_deleting_review_evidence(self):
+        # A verdict for an older commit counts when the head is ahead of it and
+        # every file changed since is a removed file under .pr-assets/.
+        def page(status="ahead", files=(("removed", ".pr-assets/issue-5/a.png"),)):
+            return json.dumps(
+                {"status": status, "files": [{"status": s, "filename": f} for s, f in files]}
+            )
+
+        old = f"Blind review: pass {OLD_SHA}\n"
+        merge = f"gh pr merge 8 -R {REPO}{PIN}"
+        ok = self.run_hook(merge, comments=old, env_extra={"GH_STUB_COMPARE": page()})
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertIn(
+            ["api", f"repos/{REPO}/compare/{OLD_SHA}...{SHA}?per_page=100", "--paginate"],
+            [c[1:] for c in self.gh_argvs()],
+        )
+        # Still pinned to the current head, not the reviewed commit.
+        unpinned = self.run_hook(
+            f"gh pr merge 8 -R {REPO}", comments=old, env_extra={"GH_STUB_COMPARE": page()}
+        )
+        self.assertEqual(unpinned.returncode, 2, unpinned.stderr)
+        self.assertEqual(self.printed_command(unpinned), merge)
+        many = [("removed", f".pr-assets/{i}.png") for i in range(300)]
+        refused = {
+            "modified evidence": (page(files=[("modified", ".pr-assets/a.png")]), ""),
+            "removed elsewhere": (page(files=[("removed", "src/a.py")]), ""),
+            "lookalike directory": (page(files=[("removed", ".pr-assets-x/a.png")]), ""),
+            "removal plus a change": (
+                page(files=[("removed", ".pr-assets/a.png"), ("modified", "src/a.py")]), ""),
+            "renamed": (page(files=[("renamed", ".pr-assets/b.png")]), ""),
+            "diverged": (page("diverged"), ""),
+            "behind": (page("behind"), ""),
+            "identical": (page("identical", ()), ""),
+            "no files": (page(files=()), ""),
+            "300 files, maybe cut short": (page(files=many), ""),
+            "a later page changes code": (page(), page(files=[("added", "src/a.py")])),
+            "unreadable": ("FAIL", ""),
+            "not json": ("Not Found", ""),
+            "error object": ('{"message": "Not Found"}', ""),
+        }  # fmt: skip
+        for name, (first, second) in refused.items():
+            with self.subTest(name):
+                env = {"GH_STUB_COMPARE": first, "GH_STUB_COMPARE_PAGE2": second}
+                result = self.run_hook(merge, comments=old, env_extra=env)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("no blind-review verdict", result.stderr)
+        limited = self.run_hook(merge, comments=old, env_extra={"GH_STUB_COMPARE": "RATE"})
+        self.assertEqual(limited.returncode, 2, limited.stderr)
+        self.assertIn("rateLimit{remaining resetAt}", limited.stderr)
+
+    def test_delete_branch_is_refused_while_a_pr_is_based_on_the_head(self):
+        stacked = json.dumps([{"number": 9, "html_url": f"{URL}9"}])
+        merge = f"gh pr merge 8 -R {REPO} --merge --delete-branch{PIN}"
+        result = self.run_hook(merge, env_extra={"GH_STUB_STACKED": stacked})
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(f"#9 {URL}9", result.stderr)
+        self.assertIn(
+            ["api", f"repos/{REPO}/pulls?state=open&base=feature&per_page=100"],
+            [c[1:] for c in self.gh_argvs()],
+        )
+        # The refusal prints the same command without the flag, which passes.
+        fixed = result.stderr.rstrip("\n").split("\n")[-1]
+        self.assertEqual(fixed, f"  gh pr merge 8 -R {REPO} --merge{PIN}")
+        again = self.run_hook(fixed.strip(), env_extra={"GH_STUB_STACKED": stacked})
+        self.assertEqual(again.returncode, 0, again.stderr)
+        # A branch name is sent URL-encoded.
+        self.args_log.unlink()
+        self.run_hook(
+            merge,
+            view_out=f"{URL}8 agent/issue-5&x {SHA}",
+            env_extra={"GH_STUB_STACKED": stacked},
+        )
+        self.assertIn(
+            ["api", f"repos/{REPO}/pulls?state=open&base=agent%2Fissue-5%26x&per_page=100"],
+            [c[1:] for c in self.gh_argvs()],
+        )
+        self.assertEqual(self.run_hook(merge, env_extra={"GH_STUB_STACKED": "[]"}).returncode, 0)
+        for out in ("FAIL", '{"message": "Not Found"}', "Not Found"):
+            with self.subTest(out=out):
+                bad = self.run_hook(merge, env_extra={"GH_STUB_STACKED": out})
+                self.assertEqual(bad.returncode, 2, bad.stderr)
+                self.assertIn("couldn't read the open PRs based on feature", bad.stderr)
+
+    def test_rate_limited_reads_point_at_the_graphql_budget(self):
+        # gh can replay a cached rate-limit error after the budget recovers.
+        for facts in ({"view": "RATE"}, {"threads": "FAIL"}, {"runs": "FAIL"}):
+            with self.subTest(facts=facts):
+                result = self.run_hook(f"gh pr merge 8 -R {REPO}{PIN}", **facts)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(
+                    "gh api graphql -f query='query{rateLimit{remaining resetAt}}'",
+                    result.stderr,
+                )
+                self.assertIn("gh config clear-cache", result.stderr)
+                self.assertIn("wait until resetAt", result.stderr)
+        other = self.run_hook(f"gh pr merge 8 -R {REPO}{PIN}", comments="FAIL")
+        self.assertEqual(other.returncode, 2, other.stderr)
+        self.assertNotIn("clear-cache", other.stderr)
+
+    def test_hyphenated_file_names_are_not_merges(self):
+        for command in (
+            "gh pr view 5 && sed -n 1p claude/hooks/pr-merge-gate.sh",
+            "git add claude/hooks/pr-merge-gate.sh && git commit -m x && gh pr create --fill",
+            "cd /x && git diff -- docs/merge-queue.md && gh pr checks 5",
+        ):
+            with self.subTest(command=command):
+                result = self.run_hook(command, comments="")
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.gh_calls(), [])
+        # Where text can still become a merge, the name still counts.
+        for command in (
+            "gh api -X POST repos/o/r/merge-upstream -f branch=main",
+            "gh api -X POST repos/o/r/merge-upstream.json -f branch=main",
+            "gh api repos/o/r/contents/claude/hooks/pr-merge-gate.sh",
+            "echo gh pr merge-x.sh | sed s/-x.sh// | sh",
+            "x=pr-merge-gate.sh; gh pr ${x:3:5} 7 -R o/r",
+            "x=merge-x.sh && gh api -X PUT repos/o/r/pulls/7/${x%%-*}",
+            "gh pr merge 7 -R o/r && cat pr-merge-gate.sh",
+            "gh pr merge pr-merge-gate.sh",
+        ):
+            with self.subTest(command=command):
+                result = self.run_hook(command, comments="")
+                self.assertEqual(result.returncode, 2, f"{command!r} was allowed")
+                self.assertIn("one merge form the gate checks", result.stderr)
+
     # The form gate.
 
     def test_every_bypass_is_refused(self):
@@ -787,9 +926,7 @@ class PrMergeGateTests(unittest.TestCase):
                 result = self.run_hook(command)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(
-                    self.pr_lookups()[0],
-                    f"{self.dir}|pr view 8 -R {REPO} --json url,headRefName,headRefOid "
-                    '-q .url + " " + .headRefName + " " + .headRefOid',
+                    self.pr_lookups()[0], f"{self.dir}|api repos/{REPO}/pulls/8 -q {PR_FILTER}"
                 )
 
     def test_canonical_forms_still_meet_the_conditions(self):
@@ -1011,7 +1148,7 @@ class CommentStripperTests(unittest.TestCase):
 # FAKE_VERDICT says otherwise; FAKE_THREAD is an unresolved thread.
 FAKE_GH = f"""#!/bin/sh
 case "$*" in
-  "pr view"*) echo "$*" >> "$GH_LOG"; echo "https://github.com/o/r/pull/1 feature {SHA}" ;;
+  "api repos/"*"/pulls/"*) echo "$*" >> "$GH_LOG"; echo "https://github.com/o/r/pull/1 feature {SHA}" ;;
   "api graphql"*) [ -n "${{FAKE_THREAD:-}}" ] && echo "$FAKE_THREAD" ;;
   "api repos/"*"/check-runs"*) echo '{{"total_count": 0, "check_runs": []}}' ;;
   "api repos/"*"/status"*) echo '{{"statuses": []}}' ;;

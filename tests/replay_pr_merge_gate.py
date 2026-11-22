@@ -4,8 +4,8 @@
 
 Reads ~/.claude/projects/**/*.jsonl, keeps Bash calls from the last --days, and
 runs each through the hook. The hook runs in a throwaway directory with a fake
-git that does nothing and a fake gh that passes only `gh pr view` to the real
-gh, so a replay can't change a checkout or write to GitHub. Lookups query GitHub read-only for
+git that does nothing and a fake gh that passes only the hook's PR read
+(`gh api repos/O/R/pulls/N -q ...`) to the real gh, so a replay can't change a checkout or write to GitHub. Lookups query GitHub read-only for
 each PR's current state, so verdicts reflect today's PRs, not the day of the
 call. Checks, review threads, and blind-review verdicts aren't looked up, so a
 merge that passes the form is counted as "lookup failed: check runs". Prints how many calls it
@@ -86,12 +86,14 @@ def merge_base(match, cwd):
 
 def fake_tools():
     """A throwaway directory holding a do-nothing git and a gh that only runs
-    the real `gh pr view`."""
+    the hook's read-only PR lookup on the real gh."""
     scratch = Path(tempfile.mkdtemp(prefix="replay-pr-merge-gate-"))
     real_gh = shutil.which("gh") or "/nonexistent/gh"
     (scratch / "gh").write_text(
         "#!/bin/sh\n"
-        f'[ "$1 $2" = "pr view" ] && exec {shlex.quote(real_gh)} "$@"\n'
+        '[ "$1" = api ] && [ $# -eq 4 ] && [ "$3" = -q ] && case "$2" in\n'
+        f'  repos/*/*/pulls/*) exec {shlex.quote(real_gh)} "$@" ;;\n'
+        "esac\n"
         "exit 1\n"
     )
     (scratch / "git").write_text("#!/bin/sh\nexit 1\n")

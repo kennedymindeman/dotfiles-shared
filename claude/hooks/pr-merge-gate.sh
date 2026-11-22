@@ -8,9 +8,11 @@
 #      PR comment by the repo's owner, a member, or a collaborator whose first
 #      line is exactly
 #        Blind review: pass <full 40-character head commit SHA>
-#      A verdict naming an older commit doesn't count.
+#      A verdict naming an older commit doesn't count, unless the only change
+#      from it to the head is deleting files under .pr-assets/.
 # The merge must also carry --match-head-commit <that head SHA>, so GitHub
-# refuses it if the head moves after these checks.
+# refuses it if the head moves after these checks. With --delete-branch, no
+# other open PR may have this PR's head branch as its base.
 # If it can't read one of these (gh fails, rate limit, jq missing), it refuses.
 # Exit 2 = block; anything else = allow.
 #
@@ -68,6 +70,17 @@ API_VALUE_FLAGS = {"-f", "-F", "--field", "--raw-field", "-q", "--jq", "-t",
                    "--template", "-H", "--header", "-X", "--method",
                    "--hostname", "--cache", "--input"}
 QUOTED = "\1"
+# A hyphenated file name, such as pr-merge-gate.sh, names no merge. Not read
+# so where text can still become a merge: an expansion, a pipe, or gh api,
+# whose paths include merge-upstream and accept a .json suffix.
+FILE_WORD = re.compile(r"(?<![\w./-])[\w./-]*(?:\w-merge|merge-\w)[\w./-]*\.\w+(?![\w./-])", re.I)
+NO_FILE_WORDS = re.compile(r"[$`\\]|(?<!\|)\|(?!\|)|\bapi\b", re.I)
+
+
+def without_file_words(cmd):
+    if NO_FILE_WORDS.search(cmd):
+        return cmd
+    return FILE_WORD.sub(lambda m: re.sub("merge", "file", m.group(), flags=re.I), cmd)
 
 
 def possible_merge(text):
@@ -301,7 +314,7 @@ if not isinstance(cmd, str):
 # Two readings: as written, and without comments. When they disagree, the
 # command is treated as naming a merge.
 text = strip_comments(cmd)
-if ((not names_merge(cmd) and not names_merge(text))
+if ((not names_merge(without_file_words(cmd)) and not names_merge(without_file_words(text)))
         or (only_quoted_text(cmd) and only_quoted_text(text))):
     sys.exit(0)
 if re.search(r"[\n\r\\`$;|<>(){}*?\[\]~!]", cmd):
@@ -340,10 +353,12 @@ if (words[:3] != ["gh", "pr", "merge"] or len(words) < 6
 num, repo, rest = words[3], words[5], words[6:]
 if any(w.startswith(("-R", "--repo")) for w in rest):
     noncanonical("-R may appear only once, as -R <owner>/<repo> after the number")
-match, at = "", None
+match, at, dels = "", None, set()
 while rest:
     word = rest.pop(0)
     if word in SWITCHES:
+        if word == "--delete-branch":
+            dels.add(len(full) - len(rest) - 1)
         continue
     if word in ("--subject", "--body") and rest:
         rest.pop(0)
@@ -363,9 +378,15 @@ if match:
         if lex(cmd[:m.start()] + "0" * 40 + cmd[m.end():]) == want:
             fixpre, fixpost = cmd[:m.start()], cmd[m.end():]
             break
+# The command without --delete-branch, for a stacked PR's refusal; empty when
+# dropping the flag's text would change another word.
+nodelete = re.sub(r"[ \t]+--delete-branch(?=[ \t]|$)", "", cmd) if dels else ""
+if nodelete and lex(nodelete) != [w for i, w in enumerate(full) if i not in dels]:
+    nodelete = ""
 # The one checked form: the shell below checks the PR's facts, and that
 # --match-head-commit is present and names the head it read.
-fields = dict(cmd=cmd, pr=num, repo=repo, match=match, fixpre=fixpre, fixpost=fixpost)
+fields = dict(cmd=cmd, pr=num, repo=repo, match=match, fixpre=fixpre, fixpost=fixpost,
+              delete="1" if dels else "", nodelete=nodelete)
 sys.stdout.buffer.write(" ".join(f"{k}={shlex.quote(v)}" for k, v in fields.items()).encode())
 sys.exit(3)
 PY
@@ -393,20 +414,24 @@ jq() { env HOME=/dev/null jq "$@"; }
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] && cd "$cwd" 2>/dev/null
 cantread() {
+  # gh keeps GraphQL replies on disk, a rate-limit error included, and can
+  # replay one after the budget has recovered.
+  printf '%s' "$3" | grep -qi 'rate limit' && block "pr-merge-gate couldn't read the $1 of $2 ($(printf '%s' "$3" | head -n 3 | tr '\n' ' ')), so the merge is refused. Read GitHub's budget: gh api graphql -f query='query{rateLimit{remaining resetAt}}'
+If points remain, run \`gh config clear-cache\` and retry once; otherwise wait until resetAt, then retry."
   block "pr-merge-gate couldn't read the $1 of $2 ($(printf '%s' "$3" | head -n 3 | tr '\n' ' ')), so the merge is refused. Retry once gh can read it: check \`gh auth status\` and \`gh api rate_limit\`."
 }
-# The PR url names the base repo even when the head is a fork.
-info=$(gh pr view "$pr" -R "$repo" --json url,headRefName,headRefOid \
-  -q '.url + " " + .headRefName + " " + .headRefOid' 2>&1) \
+# Over REST, which doesn't spend the GraphQL budget. The PR url names the
+# base repo even when the head is a fork.
+info=$(gh api "repos/$repo/pulls/$pr" -q '.html_url + " " + .head.ref + " " + .head.sha' 2>&1) \
   || cantread "head commit" "PR $pr in $repo" "$info"
-url=${info%% *}; sha=${info#* }; sha=${sha#* }
+url=${info%% *}; branch=${info#* }; branch=${branch%% *}; sha=${info#* }; sha=${sha#* }
 owner=$(printf '%s' "$url" | cut -d/ -f4)
 name=$(printf '%s' "$url" | cut -d/ -f5)
 num=$(printf '%s' "$url" | cut -d/ -f7)
 # Spelled-out classes: a range like a-f can match uppercase in some locales.
 case "$num" in *[!0123456789]*) cantread "head commit" "PR $pr" "$info" ;; esac
 case "$sha" in *[!0123456789abcdef]*) cantread "head commit" "PR $pr" "$info" ;; esac
-[ -n "$owner" ] && [ -n "$name" ] && [ -n "$num" ] && [ ${#sha} -eq 40 ] \
+[ -n "$owner" ] && [ -n "$name" ] && [ -n "$num" ] && [ -n "$branch" ] && [ ${#sha} -eq 40 ] \
   || cantread "head commit" "PR $pr" "$info"
 
 # 1. Checks on the head commit read above, by its SHA, so a later push can't
@@ -474,12 +499,30 @@ firsts=$(gh api "repos/$owner/$name/issues/$num/comments?per_page=100" --paginat
   -q '.[] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
       | .body | split("\n")[0] | rtrimstr("\r")' 2>&1) \
   || cantread "comments" "$owner/$name#$num" "$firsts"
-printf '%s\n' "$firsts" | grep -Fxq "$verdict" || block "$owner/$name#$num has no blind-review verdict for its head commit $sha.
+# A verdict for an older commit still counts when the head is ahead of it and
+# every file changed since is a removed file under .pr-assets/. A compare
+# lists at most 300 files, so a list that long may be cut short.
+covered=
+printf '%s\n' "$firsts" | grep -Fxq "$verdict" && covered=$sha
+if [ -z "$covered" ]; then
+  for old in $(printf '%s\n' "$firsts" | sed -n 's/^Blind review: pass \([0123456789abcdef]\{40\}\)$/\1/p' | sort -u); do
+    diff=$(gh api "repos/$owner/$name/compare/$old...$sha?per_page=100" --paginate 2>&1) || {
+      printf '%s' "$diff" | grep -qi 'rate limit' && cantread "compare from $old" "$owner/$name#$num" "$diff"
+      continue
+    }
+    printf '%s' "$diff" | jq -es 'length > 0 and all(.[]; type == "object" and .status == "ahead")
+      and ([.[] | .files // [] | .[]] | length > 0 and length < 300 and all(.[]; type == "object"
+        and .status == "removed" and (.filename | type) == "string"
+        and (.filename | startswith(".pr-assets/"))))' >/dev/null 2>&1 && { covered=$old; break; }
+  done
+fi
+[ -n "$covered" ] || block "$owner/$name#$num has no blind-review verdict for its head commit $sha.
 After a blind review of this commit passes, post a PR comment (as the repo's
 owner, a member, or a collaborator) whose first line is exactly:
   $verdict
 for example: gh pr comment $num -R $owner/$name --body-file <file>
-A verdict for an older commit doesn't count: a new commit needs a new review."
+A verdict for an older commit doesn't count: a new commit needs a new review,
+unless the only change since it is deleting files under .pr-assets/."
 
 # 4. Pin the merge to the head checked above: with --match-head-commit, GitHub
 # refuses the merge if the head moves after this check.
@@ -494,5 +537,21 @@ if [ "$match" != "$sha" ]; then
   $fix"
   block "this merge of $owner/$name#$num pins --match-head-commit $match, but the PR's head is $sha. Run it pinned to the head the gate checked:
   $fix"
+fi
+
+# 5. --delete-branch deletes the head branch, and GitHub then closes every
+# open PR based on it. One page is enough: any PR there refuses.
+if [ -n "$delete" ]; then
+  at="open PRs based on $branch"
+  stacked=$(gh api "repos/$owner/$name/pulls?state=open&base=$(jq -rn --arg b "$branch" '$b | @uri')&per_page=100" 2>&1) \
+    || cantread "$at" "$owner/$name" "$stacked"
+  stacked=$(printf '%s' "$stacked" | jq -r 'if type == "array" then .[] | "  #\(.number) \(.html_url)"
+    else error("not a list of PRs") end' 2>&1) \
+    || cantread "$at" "$owner/$name" "$stacked"
+  [ -n "$nodelete" ] || nodelete="(your command without --delete-branch)"
+  [ -z "$stacked" ] || block "$owner/$name#$num's head branch $branch is the base of other open PRs, and --delete-branch would close them:
+$stacked
+Merge without deleting the branch:
+  $nodelete"
 fi
 exit 0
