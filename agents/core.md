@@ -42,6 +42,6 @@ Write like you are talking to a colleague across a desk. Use concrete names, eve
 # Skills for situations
 These rules live in skills. When the situation comes up, load the skill and follow it:
 - Adding to or listing my to-do list (To-do list): `todo-list`.
-- Writing a PR or dispatching reviewers (PR authoring, Review lanes, Blind review): `pr-workflow`.
+- Writing a PR, dispatching reviewers, or writing a build brief for work where a client and a server both hold the same state (PR authoring, Review lanes, Blind review, Failure model): `pr-workflow`.
 - Before updating a package, dependency, database, OS, firmware, or app (Upgrades): `upgrades`.
 - Building any wizard, or handing me a manual step with more than one action, or one with a login, credential, or value I type (Wizards): `wizards`. Every wizard is a uv Python script built on `wizardlib` (`~/.config/dotfiles/wizardlib.py`), never bash. If another wizard skill is loaded or invoked, even by its slash command, follow only its scoping questions: don't copy its template, write bash, or run its bash checks.

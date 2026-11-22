@@ -24,7 +24,10 @@ Generate leads with `ruff check --no-cache --select S,B`, `semgrep scan --metric
 
 Report correctness findings only: bugs, regressions, unmet criteria, missing or wrong tests, and security problems. Skip style, naming, and formatting nits. Rank findings by severity, highest first. Give each one:
 
-- severity (blocker, major, minor). Blocker: the change cannot merge as is, such as an unmet criterion, a failing test, or a security hole. Major: normal use reaches it, or it loses or corrupts data at a plausible rate. Minor: everything else, including a race that needs two or more independent faults at once (such as a lost reply and a failed resync in one short window); give its likelihood and the faults it needs.
+- severity (blocker, major, minor). A race that needs two or more independent faults at once (such as a lost reply and a failed resync in one short window) is minor even when it breaks a criterion or loses data; give its likelihood and the faults it needs. Otherwise:
+  - blocker: the change fails what it claims: normal use or an attacker reaches an unmet acceptance criterion, a failing test, or a security hole
+  - major: the change does what it claims, and normal use still reaches a defect no criterion covers, or it loses or corrupts data at a plausible rate
+  - minor: everything else
 - `file:line`
 - a concrete failure scenario: the input or state, what happens, and what should happen
 - Confirmed (probe path and its failing output) or Unconfirmed (why no probe could show it)
