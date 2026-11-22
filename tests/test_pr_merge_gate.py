@@ -691,7 +691,7 @@ class PrMergeGateTests(unittest.TestCase):
             ["api", "repos/o/r/pulls/7", "-q", PR_FILTER],
         )
         # Later calls name the repo from the PR's url.
-        # Checks are read by the head SHA from pr view, never by PR number, at
+        # Checks are read by the head SHA from the PR read, never by PR number, at
         # the largest page size, every page.
         self.assertEqual(
             runs, ["api", f"repos/{REPO}/commits/{SHA}/check-runs?per_page=100", "--paginate"]
