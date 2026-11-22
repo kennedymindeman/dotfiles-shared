@@ -70,17 +70,6 @@ API_VALUE_FLAGS = {"-f", "-F", "--field", "--raw-field", "-q", "--jq", "-t",
                    "--template", "-H", "--header", "-X", "--method",
                    "--hostname", "--cache", "--input"}
 QUOTED = "\1"
-# A hyphenated file name, such as pr-merge-gate.sh, names no merge. Not read
-# so where text can still become a merge: an expansion, a pipe, or gh api,
-# whose paths include merge-upstream and accept a .json suffix.
-FILE_WORD = re.compile(r"(?<![\w./-])[\w./-]*(?:\w-merge|merge-\w)[\w./-]*\.\w+(?![\w./-])", re.I)
-NO_FILE_WORDS = re.compile(r"[$`\\]|(?<!\|)\|(?!\|)|\bapi\b", re.I)
-
-
-def without_file_words(cmd):
-    if NO_FILE_WORDS.search(cmd):
-        return cmd
-    return FILE_WORD.sub(lambda m: re.sub("merge", "file", m.group(), flags=re.I), cmd)
 
 
 def possible_merge(text):
@@ -314,7 +303,7 @@ if not isinstance(cmd, str):
 # Two readings: as written, and without comments. When they disagree, the
 # command is treated as naming a merge.
 text = strip_comments(cmd)
-if ((not names_merge(without_file_words(cmd)) and not names_merge(without_file_words(text)))
+if ((not names_merge(cmd) and not names_merge(text))
         or (only_quoted_text(cmd) and only_quoted_text(text))):
     sys.exit(0)
 if re.search(r"[\n\r\\`$;|<>(){}*?\[\]~!]", cmd):
@@ -416,15 +405,19 @@ cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 cantread() {
   # gh keeps GraphQL replies on disk, a rate-limit error included, and can
   # replay one after the budget has recovered.
-  printf '%s' "$3" | grep -qi 'rate limit' && block "pr-merge-gate couldn't read the $1 of $2 ($(printf '%s' "$3" | head -n 3 | tr '\n' ' ')), so the merge is refused. Read GitHub's budget: gh api graphql -f query='query{rateLimit{remaining resetAt}}'
-If points remain, run \`gh config clear-cache\` and retry once; otherwise wait until resetAt, then retry."
+  printf '%s' "$3" | grep -qi 'rate limit' && block "pr-merge-gate couldn't read the $1 of $2 ($(printf '%s' "$3" | head -n 3 | tr '\n' ' ')), so the merge is refused. Check both counters: \`gh api rate_limit\` for REST (core), and \`gh api graphql -f query='query{rateLimit{remaining resetAt}}'\` for GraphQL.
+If the failing read's counter has points left, run \`gh config clear-cache\` and retry once; otherwise wait until that counter resets, then retry."
   block "pr-merge-gate couldn't read the $1 of $2 ($(printf '%s' "$3" | head -n 3 | tr '\n' ' ')), so the merge is refused. Retry once gh can read it: check \`gh auth status\` and \`gh api rate_limit\`."
 }
 # Over REST, which doesn't spend the GraphQL budget. The PR url names the
 # base repo even when the head is a fork.
-info=$(gh api "repos/$repo/pulls/$pr" -q '.html_url + " " + .head.ref + " " + .head.sha' 2>&1) \
+# The head repo is empty when GitHub has none, as for a deleted fork.
+info=$(gh api "repos/$repo/pulls/$pr" \
+  -q '.html_url + " " + .head.ref + " " + .head.sha + " " + (.head.repo.full_name // "")' 2>&1) \
   || cantread "head commit" "PR $pr in $repo" "$info"
-url=${info%% *}; branch=${info#* }; branch=${branch%% *}; sha=${info#* }; sha=${sha#* }
+set -f; set -- $info; set +f
+[ $# -le 4 ] || cantread "head commit" "PR $pr" "$info"
+url=${1-}; branch=${2-}; sha=${3-}; headrepo=${4-}
 owner=$(printf '%s' "$url" | cut -d/ -f4)
 name=$(printf '%s' "$url" | cut -d/ -f5)
 num=$(printf '%s' "$url" | cut -d/ -f7)
@@ -540,13 +533,18 @@ if [ "$match" != "$sha" ]; then
 fi
 
 # 5. --delete-branch deletes the head branch, and GitHub then closes every
-# open PR based on it. One page is enough: any PR there refuses.
+# open PR based on it. Only a head branch in this repo can be a base here; a
+# fork's branch of the same name is another branch. One page is enough: any
+# PR there refuses.
 if [ -n "$delete" ]; then
+  [ -n "$headrepo" ] || cantread "head repository" "$owner/$name#$num" "$info"
+fi
+if [ -n "$delete" ] && [ "$headrepo" = "$owner/$name" ]; then
   at="open PRs based on $branch"
   stacked=$(gh api "repos/$owner/$name/pulls?state=open&base=$(jq -rn --arg b "$branch" '$b | @uri')&per_page=100" 2>&1) \
     || cantread "$at" "$owner/$name" "$stacked"
-  stacked=$(printf '%s' "$stacked" | jq -r 'if type == "array" then .[] | "  #\(.number) \(.html_url)"
-    else error("not a list of PRs") end' 2>&1) \
+  stacked=$(printf '%s' "$stacked" | jq -rs 'if length == 1 and (.[0] | type) == "array"
+    then .[0][] | "  #\(.number) \(.html_url)" else error("not one list of PRs") end' 2>&1) \
     || cantread "$at" "$owner/$name" "$stacked"
   [ -n "$nodelete" ] || nodelete="(your command without --delete-branch)"
   [ -z "$stacked" ] || block "$owner/$name#$num's head branch $branch is the base of other open PRs, and --delete-branch would close them:

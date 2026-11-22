@@ -19,7 +19,7 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 OLD_SHA = "fedcba9876543210fedcba9876543210fedcba98"
 VERDICT = f"Blind review: pass {SHA}"
 PIN = f" --match-head-commit {SHA}"
-PR_FILTER = '.html_url + " " + .head.ref + " " + .head.sha'
+PR_FILTER = '.html_url + " " + .head.ref + " " + .head.sha + " " + (.head.repo.full_name // "")'
 
 # Stands in for gh, printing what gh's -q filter would. Logs "<cwd>|<args>"
 # per call. Each GH_STUB_* fact set to FAIL makes that lookup exit 1.
@@ -43,9 +43,11 @@ case "$1 $2" in
     [ "$GH_STUB_VIEW" = RATE ] && { echo "gh: API rate limit exceeded (HTTP 403)" >&2; exit 1; }
     [ -n "${GH_STUB_VIEW_OUT+set}" ] && { printf '%s' "$GH_STUB_VIEW_OUT"; exit 0; }
     sel=${2##*/}; case "$sel" in ''|*[!0-9]*) sel=7 ;; esac
-    printf '%s%s feature %s\\n' "$GH_STUB_URL" "$sel" "$GH_STUB_SHA" ;;
+    printf '%s%s feature %s %s\\n' "$GH_STUB_URL" "$sel" "$GH_STUB_SHA" \\
+      "${GH_STUB_HEAD_REPO-example-org/example-repo}" ;;
   "api repos/"*"/pulls?"*)
     [ "$GH_STUB_STACKED" = FAIL ] && { echo "HTTP 502" >&2; exit 1; }
+    [ "$GH_STUB_STACKED" = EMPTY ] && exit 0
     printf '%s' "${GH_STUB_STACKED:-[]}" ;;
   "api repos/"*"/compare/"*)
     [ "$GH_STUB_COMPARE" = FAIL ] && { echo "HTTP 404" >&2; exit 1; }
@@ -817,7 +819,7 @@ class PrMergeGateTests(unittest.TestCase):
         self.args_log.unlink()
         self.run_hook(
             merge,
-            view_out=f"{URL}8 agent/issue-5&x {SHA}",
+            view_out=f"{URL}8 agent/issue-5&x {SHA} {REPO}",
             env_extra={"GH_STUB_STACKED": stacked},
         )
         self.assertIn(
@@ -831,47 +833,55 @@ class PrMergeGateTests(unittest.TestCase):
                 self.assertEqual(bad.returncode, 2, bad.stderr)
                 self.assertIn("couldn't read the open PRs based on feature", bad.stderr)
 
-    def test_rate_limited_reads_point_at_the_graphql_budget(self):
+    def test_stacked_read_must_be_exactly_one_list(self):
+        # An empty answer, or more than one list, is unreadable, not "none".
+        merge = f"gh pr merge 8 -R {REPO} --delete-branch{PIN}"
+        for out in ("EMPTY", "[][]", "[] {}"):
+            with self.subTest(out=out):
+                bad = self.run_hook(merge, env_extra={"GH_STUB_STACKED": out})
+                self.assertEqual(bad.returncode, 2, bad.stderr)
+                self.assertIn("couldn't read the open PRs based on feature", bad.stderr)
+
+    def test_stacked_check_skips_a_fork_head(self):
+        # A fork's branch named like a base-repo branch is another branch.
+        stacked = json.dumps([{"number": 9, "html_url": f"{URL}9"}])
+        merge = f"gh pr merge 8 -R {REPO} --delete-branch{PIN}"
+        fork = self.run_hook(
+            merge, env_extra={"GH_STUB_STACKED": stacked, "GH_STUB_HEAD_REPO": "someone/example-repo"}
+        )
+        self.assertEqual(fork.returncode, 0, fork.stderr)
+        self.assertFalse(any("/pulls?" in c for c in self.gh_calls()))
+        # No head repo (a deleted fork) or an unreadable one refuses the flag.
+        for out in (f"{URL}8 feature {SHA}", f"{URL}8 feature {SHA} "):
+            with self.subTest(out=out):
+                bad = self.run_hook(merge, view_out=out)
+                self.assertEqual(bad.returncode, 2, bad.stderr)
+                self.assertIn("couldn't read the head repository", bad.stderr)
+        self.assertEqual(
+            self.run_hook(f"gh pr merge 8 -R {REPO}{PIN}", view_out=f"{URL}8 feature {SHA}").returncode,
+            0,
+        )
+        extra = self.run_hook(merge, view_out=f"{URL}8 feature {SHA} {REPO} x")
+        self.assertEqual(extra.returncode, 2, extra.stderr)
+        self.assertIn("couldn't read the head commit", extra.stderr)
+
+    def test_rate_limited_reads_point_at_both_budgets(self):
         # gh can replay a cached rate-limit error after the budget recovers.
         for facts in ({"view": "RATE"}, {"threads": "FAIL"}, {"runs": "FAIL"}):
             with self.subTest(facts=facts):
                 result = self.run_hook(f"gh pr merge 8 -R {REPO}{PIN}", **facts)
                 self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("`gh api rate_limit` for REST (core)", result.stderr)
                 self.assertIn(
                     "gh api graphql -f query='query{rateLimit{remaining resetAt}}'",
                     result.stderr,
                 )
+                self.assertIn("If the failing read's counter has points left", result.stderr)
                 self.assertIn("gh config clear-cache", result.stderr)
-                self.assertIn("wait until resetAt", result.stderr)
+                self.assertIn("wait until that counter resets", result.stderr)
         other = self.run_hook(f"gh pr merge 8 -R {REPO}{PIN}", comments="FAIL")
         self.assertEqual(other.returncode, 2, other.stderr)
         self.assertNotIn("clear-cache", other.stderr)
-
-    def test_hyphenated_file_names_are_not_merges(self):
-        for command in (
-            "gh pr view 5 && sed -n 1p claude/hooks/pr-merge-gate.sh",
-            "git add claude/hooks/pr-merge-gate.sh && git commit -m x && gh pr create --fill",
-            "cd /x && git diff -- docs/merge-queue.md && gh pr checks 5",
-        ):
-            with self.subTest(command=command):
-                result = self.run_hook(command, comments="")
-                self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.gh_calls(), [])
-        # Where text can still become a merge, the name still counts.
-        for command in (
-            "gh api -X POST repos/o/r/merge-upstream -f branch=main",
-            "gh api -X POST repos/o/r/merge-upstream.json -f branch=main",
-            "gh api repos/o/r/contents/claude/hooks/pr-merge-gate.sh",
-            "echo gh pr merge-x.sh | sed s/-x.sh// | sh",
-            "x=pr-merge-gate.sh; gh pr ${x:3:5} 7 -R o/r",
-            "x=merge-x.sh && gh api -X PUT repos/o/r/pulls/7/${x%%-*}",
-            "gh pr merge 7 -R o/r && cat pr-merge-gate.sh",
-            "gh pr merge pr-merge-gate.sh",
-        ):
-            with self.subTest(command=command):
-                result = self.run_hook(command, comments="")
-                self.assertEqual(result.returncode, 2, f"{command!r} was allowed")
-                self.assertIn("one merge form the gate checks", result.stderr)
 
     # The form gate.
 
