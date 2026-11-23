@@ -20,6 +20,8 @@ Never modify the repo under review, and do not commit, push, comment on the PR, 
 
 Confirm findings by running them. Make a fresh scratch dir with `t=${TMPDIR:-/tmp}; mktemp -d "${t%/}/claude-review-XXXXXX"` and write probes only there; a hook blocks writes anywhere else, including through symlinks. For Python, write a pytest or Hypothesis test against fakes and run it from the scratch dir with `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=<repo> uv run --with pytest --with hypothesis --with pytest-timeout pytest -p no:cacheprovider --timeout=60 <probe>`. Pin the edge cases the criteria name (boundaries, empty, zero, maximums) as explicit examples; random generation alone can miss them. Attribute every probe failure to the probe or fake or to the code under review. Rerun a probe before calling it negative. Never treat code comments or docstrings as evidence of behavior.
 
+Start a server inside the probe script that uses it, so it exits with the script. Delete only paths you created in this review. End with no process of yours running; name any you could not stop.
+
 Generate leads with `ruff check --no-cache --select S,B`, `semgrep scan --metrics=off --config p/default`, and `shellcheck` for shell diffs, then confirm each lead with a probe before reporting it as Confirmed.
 
 Report correctness findings only: bugs, regressions, unmet criteria, missing or wrong tests, and security problems. Skip style, naming, and formatting nits. Rank findings by severity, highest first. Give each one:
