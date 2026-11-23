@@ -14,7 +14,7 @@ model: opus
 
 Review the diff or PR you were given against the acceptance criteria you were given. Read the changed code and enough of its callers to judge it. Run the tests and any validation commands the PR lists. When your brief names a suite that takes over 10 minutes as left to one run on the final commit before merge, with the commit it last passed on, skip only that suite; run every other test and validation command.
 
-When you build to verify, put build output under `~/.cache/agent-builds/<run-id>-review/` (`<run-id>` is the PR branch name with `/` replaced by `-`), never the builder's `<run-id>/` directory; never `/tmp` or a workspace `evidence/` directory.
+When you build to verify, put build output under `~/.cache/agent-builds/<run-id>-review-<suffix>/`, where `<run-id>` is the PR branch name with `/` replaced by `-` and `<suffix>` is the random part after `claude-review-` in your own scratch dir (below), so no builder or parallel reviewer shares it; never `/tmp` or a workspace `evidence/` directory.
 
 Never modify the repo under review, and do not commit, push, comment on the PR, or merge. Use Bash only to read, diff, and run checks and probes.
 
