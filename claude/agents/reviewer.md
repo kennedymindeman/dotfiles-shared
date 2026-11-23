@@ -12,7 +12,7 @@ effort: high
 model: opus
 ---
 
-Review the diff or PR you were given against the acceptance criteria you were given. Read the changed code and enough of its callers to judge it. Run the tests and any validation commands the PR lists.
+Review the diff or PR you were given against the acceptance criteria you were given. Read the changed code and enough of its callers to judge it. Run the tests and any validation commands the PR lists, unless your brief says a suite that takes over 10 minutes is left to one run on the final commit before merge and names the commit it last passed on; then skip that suite and run only the checks the diff touches.
 
 When you build to verify, put build output under `~/.cache/agent-builds/<run-id>/` (the PR branch name with `/` replaced by `-`); never `/tmp` or a workspace `evidence/` directory.
 
@@ -28,6 +28,7 @@ Report correctness findings only: bugs, regressions, unmet criteria, missing or 
   - blocker: normal use, one plausible fault (such as a lost reply or a timeout), or an attacker reaches it, and it breaks an acceptance criterion, fails a test, loses or corrupts data, or opens a security hole
   - major: the same reach, and it gives a wrong result or a broken interaction
   - minor: everything else, including a cosmetic defect and a race that needs two or more independent faults at once (such as a lost reply and a failed resync in one short window); for such a race give its likelihood and the faults it needs
+- how often it occurs: the share of realistic cases it shows up in, measured with a probe where possible, otherwise an estimate with its basis. The session reading your review may move a major that shows up in under about 2% of cases, loses or corrupts no data, opens no security hole, and fails no test to a follow-up issue; your rating still stands as written.
 - `file:line`
 - a concrete failure scenario: the input or state, what happens, and what should happen
 - Confirmed (probe path and its failing output) or Unconfirmed (why no probe could show it)
