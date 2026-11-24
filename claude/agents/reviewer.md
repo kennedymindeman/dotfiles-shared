@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Use this agent for blind review of a diff or PR against acceptance criteria. Hand it the artifact (PR number, branch, or diff range) and the criteria, plus on a re-review the earlier findings file and fix range, never the findings you expect. It reads the diff, runs the tests, confirms findings with probes in a scratch dir, writes its findings to a file, and returns the verdict and the file's path. It does not do web research or fix what it finds.
-tools: Read, Grep, Glob, Bash, Write
+tools: Read, Grep, Glob, Bash, Write, Skill
 hooks:
   PreToolUse:
     - matcher: "Write|Edit"
