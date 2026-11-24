@@ -31,8 +31,8 @@ class ReviewScratchHookTests(unittest.TestCase):
         self.home = Path(base, "home")
         self.findings = self.home / ".cache/review-findings"
 
-    def run_hook(self, payload, path_env=None):
-        env = {**os.environ, "TMPDIR": self.tmpdir, "HOME": str(self.home)}
+    def run_hook(self, payload, path_env=None, home_env=None):
+        env = {**os.environ, "TMPDIR": self.tmpdir, "HOME": home_env or str(self.home)}
         if path_env is not None:
             env["PATH"] = path_env
         return subprocess.run(
@@ -88,14 +88,54 @@ class ReviewScratchHookTests(unittest.TestCase):
         self.assertBlocked(loose / "a.py")
         self.assertBlocked(self.real_tmp / "review-old/a.py")
 
-    def test_allows_a_findings_file(self):
-        self.assertBlocked(self.findings / "repo-pr3-abc1234.md")
+    def make_findings(self, mode=0o700):
         self.findings.mkdir(parents=True)
-        self.assertAllowed(self.findings / "repo-pr3-abc1234.md")
-        self.assertAllowed(f"{self.home}/.cache//review-findings/repo-pr3-abc1234.md")
+        self.findings.chmod(mode)
+
+    def test_blocks_hardlinks_in_scratch(self):
+        target = self.repo / "app.py"
+        target.write_text("x\n")
+        os.link(target, self.scratch / "linked.py")
+        self.assertBlocked(self.scratch / "linked.py")
+
+    def test_allows_a_findings_file_per_lane(self):
+        self.assertBlocked(self.findings / "repo-pr3-abc1234-blind.md")
+        self.make_findings()
+        self.assertAllowed(self.findings / "repo-pr3-abc1234-blind.md")
+        self.assertAllowed(self.findings / "repo-pr3-abc1234-red-team.md")
+        (self.findings / "repo-pr3-abc1234-blind.md").write_text("findings\n")
+        self.assertAllowed(self.findings / "repo-pr3-abc1234-blind.md")
+        self.assertAllowed(f"{self.home}/.cache//review-findings/repo-pr3-abc1234-blind.md")
+
+    def test_blocks_findings_dir_not_mode_700(self):
+        self.make_findings(0o777)
+        self.assertBlocked(self.findings / "repo-pr3-abc1234-blind.md")
+
+    def test_blocks_hardlinks_in_findings(self):
+        self.make_findings()
+        target = self.repo / "README.md"
+        target.write_text("x\n")
+        os.link(target, self.findings / "repo-pr3-abc1234-blind.md")
+        self.assertBlocked(self.findings / "repo-pr3-abc1234-blind.md")
+
+    def test_blocks_a_symlinked_cache_parent(self):
+        elsewhere = self.repo / "cache"
+        (elsewhere / "review-findings").mkdir(parents=True, mode=0o700)
+        (elsewhere / "review-findings").chmod(0o700)
+        self.home.mkdir()
+        (self.home / ".cache").symlink_to(elsewhere)
+        self.assertBlocked(self.findings / "repo-pr3-abc1234-blind.md")
+
+    def test_blocks_findings_under_a_relative_home(self):
+        self.make_findings()
+        result = self.run_hook(
+            {"tool_input": {"file_path": str(self.findings / "a-pr1-abc1234-blind.md")}},
+            home_env=os.path.relpath(self.home),
+        )
+        self.assertEqual(result.returncode, 2, "relative HOME was allowed")
 
     def test_blocks_other_writes_near_findings(self):
-        self.findings.mkdir(parents=True)
+        self.make_findings()
         self.assertBlocked(self.findings / "probe.py")
         self.assertBlocked(self.findings / "sub/repo-pr3-abc1234.md")
         self.assertBlocked(self.findings / ".." / "repo-pr3-abc1234.md")
@@ -105,6 +145,7 @@ class ReviewScratchHookTests(unittest.TestCase):
 
     def test_blocks_a_findings_dir_that_links_elsewhere(self):
         self.findings.parent.mkdir(parents=True)
+        self.repo.chmod(0o700)
         self.findings.symlink_to(self.repo)
         self.assertBlocked(self.findings / "repo-pr3-abc1234.md")
         self.assertBlocked(self.repo / "repo-pr3-abc1234.md")

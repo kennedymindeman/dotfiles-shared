@@ -8,7 +8,7 @@
 # Exit 2 = block; fails closed when the input can't be parsed.
 set -u
 block() {
-  echo "Blocked: reviewer writes only go in a dir made by mktemp -d \"\${TMPDIR:-/tmp}/claude-review-XXXXXX\", or to a .md findings file directly in ~/.cache/review-findings ($1: ${path:-no path})." >&2
+  echo "Blocked: reviewer writes only go in a dir made by mktemp -d \"\${TMPDIR:-/tmp}/claude-review-XXXXXX\", or to a .md findings file directly in a mode-700 ~/.cache/review-findings ($1: ${path:-no path})." >&2
   exit 2
 }
 path=
@@ -18,6 +18,8 @@ case "$path" in /*) ;; *) block "not an absolute path" ;; esac
 case "/$path/" in */../*|*/./*) block "dot path component" ;; esac
 [ -L "$path" ] && block "target is a symlink"
 [ -d "$path" ] && block "target is a directory"
+# A hard link would let a write reach a file outside the allowed dirs.
+[ -n "$(find "$path" -maxdepth 0 -links +1 2>/dev/null)" ] && block "target has another hard link"
 tmp=$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P) || block "temp dir missing"
 
 # Resolve the deepest existing ancestor; components below it don't exist yet.
@@ -29,14 +31,19 @@ done
 real=$(cd "$dir" && pwd -P) || block "cannot resolve parent"
 
 # The one write outside the scratch dir: the findings file, a .md file
-# directly inside a real (non-symlink) ~/.cache/review-findings you own.
-findings=${HOME:+$HOME/.cache/review-findings}
+# directly inside ~/.cache/review-findings, whose real path must be exactly
+# <real home>/.cache/review-findings (no symlinked .cache or findings dir),
+# owned by you with mode 700.
+home=${HOME:-}
+case "$home" in /*) ;; *) home= ;; esac
 case "$path" in
   *.md)
-    if [ -n "$findings" ] && [ "$dir" = "$(dirname "$path")" ] \
-      && [ -d "$findings" ] && [ ! -L "$findings" ] \
-      && [ "$real" = "$(cd "$findings" && pwd -P)" ] \
-      && [ -n "$(find "$findings" -maxdepth 0 -type d -user "$(id -u)" 2>/dev/null)" ]; then
+    if [ -n "$home" ] && [ "$dir" = "$(dirname "$path")" ] \
+      && realhome=$(cd "$home" 2>/dev/null && pwd -P) \
+      && findings=$(cd "$home/.cache/review-findings" 2>/dev/null && pwd -P) \
+      && [ "$findings" = "$realhome/.cache/review-findings" ] \
+      && [ "$real" = "$findings" ] \
+      && [ -n "$(find "$findings" -maxdepth 0 -type d -user "$(id -u)" -perm 700 2>/dev/null)" ]; then
       exit 0
     fi ;;
 esac
