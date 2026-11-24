@@ -1,7 +1,7 @@
 ---
 name: calendar
 description: Use for Google Calendar tasks — finding events, checking conflicts, creating, updating, or deleting events, and RSVPs. Has only the Calendar tools.
-tools: mcp__claude_ai_Google_Calendar
+tools: mcp__claude_ai_Google_Calendar, Skill
 model: opus
 ---
 

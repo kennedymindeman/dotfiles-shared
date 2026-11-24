@@ -1,6 +1,6 @@
 ---
 name: test-feedback
-description: Live feedback for a long test. Use when building or changing a test that runs longer than about ten seconds.
+description: Live feedback for a long test. Use when building or changing any test whose run time is long or not yet known.
 ---
 
 # Test feedback

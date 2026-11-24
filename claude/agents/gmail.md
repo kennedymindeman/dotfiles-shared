@@ -1,7 +1,7 @@
 ---
 name: gmail
 description: Use for Gmail tasks — searching, reading, drafting, sending, labeling, or trashing mail. Has only the Gmail tools.
-tools: mcp__claude_ai_Gmail
+tools: mcp__claude_ai_Gmail, Skill
 model: opus
 ---
 

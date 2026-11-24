@@ -1,7 +1,7 @@
 ---
 name: drive
 description: Use for Google Drive tasks — finding, reading, creating, updating, sharing, or trashing files. Has only the Drive tools.
-tools: mcp__claude_ai_Google_Drive
+tools: mcp__claude_ai_Google_Drive, Skill
 model: opus
 ---
 
