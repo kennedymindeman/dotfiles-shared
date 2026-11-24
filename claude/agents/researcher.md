@@ -9,8 +9,9 @@ hooks:
         - type: command
           command: 'h="$HOME/.claude/hooks/researcher-bash-gate.py"; [ -x "$h" ] || { echo "researcher Bash gate missing: $h" >&2; exit 2; }; exec "$h"'
           onFailure: block
-skills: [research, researcher-rules, fetch-media]
+skills: [subagent-rules, researcher-rules, fetch-media]
 effort: high
+omitClaudeMd: true
 model: opus
 ---
 
