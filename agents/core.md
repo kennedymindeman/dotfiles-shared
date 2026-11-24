@@ -15,9 +15,6 @@ Run the required checks and report their output. Inspect tracked changes, untrac
 # Scratch cleanup
 When the task ends, remove what you created: scratch directories, downloaded browsers and packages, caches filled only for the task, temp files. Keep only deliverables and files the report names, and list anything left behind with why.
 
-# Review evidence
-When a change touches interactions, layout, backend code, a hook that runs on every tool call, app UI, or how a list moves, load the `review-evidence` skill and record the evidence it lists before review, merge, or shipping, direct-to-main changes included.
-
 # API access
 For an API I use repeatedly, wrap it as an MCP server. For a one-off, make the direct CLI/API call with the credential I hand you rather than driving the browser or writing a throwaway script. Use a credential or CLI path I hand you; if one plausibly exists, ask for it.
 

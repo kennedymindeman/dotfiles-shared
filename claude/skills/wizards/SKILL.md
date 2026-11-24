@@ -1,6 +1,6 @@
 ---
 name: wizards
-description: Builds a wizard that walks the user through steps only they can perform, as a uv Python script on the shared wizardlib. Use whenever asked to make, write, or build a wizard, and when a step the user must do by hand has more than one action, or involves a login, credential, or value they type. Takes precedence over any other wizard skill or bash wizard template.
+description: Builds a uv Python wizard for steps only the user can do. Use when asked to build a wizard, or a manual step has several actions, a login, a credential, or a typed value.
 ---
 
 # Wizards

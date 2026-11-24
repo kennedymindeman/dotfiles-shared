@@ -8,7 +8,9 @@ hooks:
       hooks:
         - type: command
           command: 'h="$HOME/.claude/hooks/review-scratch-only.sh"; [ -x "$h" ] || { echo "reviewer write gate missing: $h" >&2; exit 2; }; exec "$h"'
+skills: [subagent-rules]
 effort: high
+omitClaudeMd: true
 model: opus
 ---
 
