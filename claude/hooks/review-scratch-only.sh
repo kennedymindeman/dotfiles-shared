@@ -2,12 +2,13 @@
 # PreToolUse hook (matcher: Write|Edit) for the reviewer agent. Allows file
 # writes only inside a scratch dir made by
 #   mktemp -d "${TMPDIR:-/tmp}/claude-review-XXXXXX"
-# that the current user owns with mode 700. Paths are compared after
+# that the current user owns with mode 700, plus the findings file (below).
+# Paths are compared after
 # resolving symlinks, so a link from the scratch dir into the repo is blocked.
 # Exit 2 = block; fails closed when the input can't be parsed.
 set -u
 block() {
-  echo "Blocked: reviewer writes only go in a dir made by mktemp -d \"\${TMPDIR:-/tmp}/claude-review-XXXXXX\" ($1: ${path:-no path})." >&2
+  echo "Blocked: reviewer writes only go in a dir made by mktemp -d \"\${TMPDIR:-/tmp}/claude-review-XXXXXX\", or to a .md findings file directly in ~/.cache/review-findings ($1: ${path:-no path})." >&2
   exit 2
 }
 path=
@@ -26,6 +27,19 @@ while [ ! -d "$dir" ]; do
   dir=$(dirname "$dir")
 done
 real=$(cd "$dir" && pwd -P) || block "cannot resolve parent"
+
+# The one write outside the scratch dir: the findings file, a .md file
+# directly inside a real (non-symlink) ~/.cache/review-findings you own.
+findings=${HOME:+$HOME/.cache/review-findings}
+case "$path" in
+  *.md)
+    if [ -n "$findings" ] && [ "$dir" = "$(dirname "$path")" ] \
+      && [ -d "$findings" ] && [ ! -L "$findings" ] \
+      && [ "$real" = "$(cd "$findings" && pwd -P)" ] \
+      && [ -n "$(find "$findings" -maxdepth 0 -type d -user "$(id -u)" 2>/dev/null)" ]; then
+      exit 0
+    fi ;;
+esac
 
 case "$real/" in
   "$tmp"/claude-review-?*/*) ;;

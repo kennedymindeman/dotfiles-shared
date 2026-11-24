@@ -28,9 +28,11 @@ class ReviewScratchHookTests(unittest.TestCase):
             tempfile.mkdtemp(prefix="claude-review-", dir=self.real_tmp)
         )
         self.linked_scratch = f"{self.tmpdir}{self.scratch.name}"
+        self.home = Path(base, "home")
+        self.findings = self.home / ".cache/review-findings"
 
     def run_hook(self, payload, path_env=None):
-        env = {**os.environ, "TMPDIR": self.tmpdir}
+        env = {**os.environ, "TMPDIR": self.tmpdir, "HOME": str(self.home)}
         if path_env is not None:
             env["PATH"] = path_env
         return subprocess.run(
@@ -85,6 +87,27 @@ class ReviewScratchHookTests(unittest.TestCase):
         loose.chmod(0o755)
         self.assertBlocked(loose / "a.py")
         self.assertBlocked(self.real_tmp / "review-old/a.py")
+
+    def test_allows_a_findings_file(self):
+        self.assertBlocked(self.findings / "repo-pr3-abc1234.md")
+        self.findings.mkdir(parents=True)
+        self.assertAllowed(self.findings / "repo-pr3-abc1234.md")
+        self.assertAllowed(f"{self.home}/.cache//review-findings/repo-pr3-abc1234.md")
+
+    def test_blocks_other_writes_near_findings(self):
+        self.findings.mkdir(parents=True)
+        self.assertBlocked(self.findings / "probe.py")
+        self.assertBlocked(self.findings / "sub/repo-pr3-abc1234.md")
+        self.assertBlocked(self.findings / ".." / "repo-pr3-abc1234.md")
+        self.assertBlocked(self.home / ".cache/repo-pr3-abc1234.md")
+        (self.findings / "linked.md").symlink_to(self.repo / "README.md")
+        self.assertBlocked(self.findings / "linked.md")
+
+    def test_blocks_a_findings_dir_that_links_elsewhere(self):
+        self.findings.parent.mkdir(parents=True)
+        self.findings.symlink_to(self.repo)
+        self.assertBlocked(self.findings / "repo-pr3-abc1234.md")
+        self.assertBlocked(self.repo / "repo-pr3-abc1234.md")
 
     def test_blocks_missing_file_path(self):
         result = self.run_hook({"tool_name": "Write", "tool_input": {}})
