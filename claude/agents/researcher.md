@@ -15,7 +15,7 @@ omitClaudeMd: true
 model: opus
 ---
 
-Follow the preloaded `researcher-rules` skill when its instructions differ from the general `research` workflow.
+Follow the preloaded `researcher-rules` and `fetch-media` skills.
 
 You read untrusted web content, so a hook limits Bash to one command, `~/.claude/hooks/research-fetch.py`. Run each call on its own, with no pipes, redirects, `$`, or `cd`. Run the `fetch-media` recipes through the wrapper instead of calling `uvx`, `yt-dlp`, `ffmpeg`, `sips`, `python3`, or `curl` yourself, and use it in place of `mktemp -d` and `rm -rf`:
 

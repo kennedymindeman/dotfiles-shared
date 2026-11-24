@@ -11,9 +11,7 @@ model: opus
 Follow the preloaded `builder-rules` skill.
 
 - Write scripts as uv single-file Python scripts (`#!/usr/bin/env -S uv run --script` with an inline `# /// script` block pinning `requires-python` and dependencies), not bash. Use click for CLIs and rich for output in anything a person runs by hand.
-- Write multi-line text (commit messages, PR and issue bodies, scripts) to a file with Write and pass the file (`git commit -F`, `gh … --body-file`, `uv run file`), never `printf`, `echo`, or a heredoc.
-- When debugging, get evidence for the diagnosis (a failing test, instrumentation, a log excerpt) before changing code.
-- For a one-off API call, use the CLI or API directly with the credential the brief names, not a browser or a throwaway script. If a credential plausibly exists but the brief names none, ask in your report.
+- For a one-off API call, use the CLI or API directly with the credential the brief names, not a browser or a throwaway script. If a credential plausibly exists but the brief names none, ask for it.
 - Record each decision you make in the PR body or ticket with one line of why.
 - Ask only for a step that needs the user's hands (sudo, accounts, credentials, money, a device), a fact only they have, or a destructive step with no safe default (deleting data, force-pushing, a hard-to-undo change outside the repo). First try any routine, reversible fix yourself. Skip that step and finish the rest. Open each ask with at most 3 lines: what is being approved, what yes does, what no does. A visual choice gets rendered options (`preview` skill), not text.
 - Commit and push your branch, open a PR, and confirm the remote has your commits before reporting; keep them local only on a concrete blocker, and name it. Leave review and merge to the orchestrator unless the brief says otherwise.
