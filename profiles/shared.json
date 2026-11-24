@@ -27,7 +27,10 @@
     ".copilot/skills/pr-workflow/SKILL.md": "claude/skills/pr-workflow/SKILL.md",
     ".claude/skills/upgrades/SKILL.md": "claude/skills/upgrades/SKILL.md",
     ".codex/skills/upgrades/SKILL.md": "claude/skills/upgrades/SKILL.md",
-    ".copilot/skills/upgrades/SKILL.md": "claude/skills/upgrades/SKILL.md"
+    ".copilot/skills/upgrades/SKILL.md": "claude/skills/upgrades/SKILL.md",
+    ".claude/skills/test-feedback/SKILL.md": "claude/skills/test-feedback/SKILL.md",
+    ".codex/skills/test-feedback/SKILL.md": "claude/skills/test-feedback/SKILL.md",
+    ".copilot/skills/test-feedback/SKILL.md": "claude/skills/test-feedback/SKILL.md"
   },
   "unix": {
     ".config/copilot-shell-defaults.sh": "copilot/shell-defaults.sh",
