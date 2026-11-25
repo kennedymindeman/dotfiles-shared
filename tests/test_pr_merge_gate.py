@@ -41,7 +41,7 @@ case "$1 $2" in
   "api repos/"*"/pulls/"*)
     case "$*" in *additions*)
       [ "$GH_STUB_SIZE" = FAIL ] && { echo "HTTP 502" >&2; exit 1; }
-      printf '%s\\n' "${GH_STUB_SIZE-10 1}"; exit 0 ;;
+      printf '%s %s\\n' "${GH_STUB_SIZE_SHA-$GH_STUB_SHA}" "${GH_STUB_SIZE-10 1}"; exit 0 ;;
     esac
     [ "$GH_STUB_VIEW" = FAIL ] && { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
     [ "$GH_STUB_VIEW" = RATE ] && { echo "gh: API rate limit exceeded (HTTP 403)" >&2; exit 1; }
@@ -430,6 +430,35 @@ class PrMergeGateTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("couldn't read the size", result.stderr)
+        # Counts that describe another head, as just after a push, refuse.
+        result = self.run_hook(
+            merge, comments=self_verdict, env_extra={"GH_STUB_SIZE_SHA": OLD_SHA}
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("couldn't read the size", result.stderr)
+
+    def test_size_filter_refuses_a_missing_count(self):
+        # The hook's own jq filter, on GitHub-shaped JSON.
+        if shutil.which("jq") is None:
+            self.skipTest("jq not installed")
+        source = HOOK.read_text()
+        start = source.index("-q 'if ([.additions") + 4
+        size_filter = source[start : source.index("' 2>&1", start)]
+        for pr, expected in (
+            ({"additions": 3, "deletions": 4, "changed_files": 2}, f"{SHA} 7 2"),
+            ({"additions": None, "deletions": 30, "changed_files": 1}, "unreadable"),
+            ({"additions": "3", "deletions": 4, "changed_files": 1}, "unreadable"),
+            ({"additions": 3, "deletions": 4}, "unreadable"),
+        ):
+            with self.subTest(pr=pr):
+                out = subprocess.run(
+                    ["jq", "-r", size_filter],
+                    input=json.dumps({"head": {"sha": SHA}, **pr}),
+                    capture_output=True,
+                    check=True,
+                    text=True,
+                )
+                self.assertEqual(out.stdout.strip(), expected)
 
     def test_self_review_verdict_must_name_the_head(self):
         merge = f"gh pr merge 8 -R {REPO}{PIN}"
