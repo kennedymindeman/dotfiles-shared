@@ -120,7 +120,6 @@ and restricts sensitive paths. Outbound internet remains allowed.
 The shared agents are small single-job agents. The `builder`, `general-purpose`,
 `researcher`, and `reviewer` agents preload skills from [kennedymindeman/skills](https://github.com/kennedymindeman/skills),
 and the Copilot `researcher` also preloads `research` from [mattpocock/skills](https://github.com/mattpocock/skills).
-The shared rules in `agents/core.md` point to `review-evidence` from the same repo.
 Install those skills for each agent harness you use:
 
 ```sh
