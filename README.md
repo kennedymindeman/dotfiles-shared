@@ -138,22 +138,30 @@ and update it when a new Opus ships.
 
 ## Update or change profiles
 
-The profile resolves from `--profile`, then `DOTFILES_ENV`, then `~/.dotfiles-env`.
-There is no default. Invalid or absent choices stop before configuration writes.
+The profile resolves from `--profile`, then the profile and overlay recorded by
+the last link, then `DOTFILES_ENV`, then `~/.dotfiles-env`. There is no default.
+Invalid or absent choices stop before configuration writes. A rerun without
+`--profile` stops if the recorded overlay no longer exists.
 `--dry-run` validates conflicts and prints planned changes without writing files.
 
-To pick up changes, pull this checkout and rerun the linker with the same
-arguments this machine was linked with: its profile, and `--overlay` when it
-uses one, since omitting the overlay removes it (see below):
+To pick up changes, pull; the hook relinks. The linker installs a `post-merge`
+Git hook in this checkout, and in the overlay when it is a Git checkout, that
+reruns the linker with the recorded profile and overlay. The hook never fails
+the pull: on a linker error it prints the error and the command to rerun. The
+linker leaves an existing hook it did not write in place and prints a warning;
+relink by hand in that checkout. Claude Code's SessionStart freshness hook also
+reports when `~/.claude/CLAUDE.md` is older than this checkout's rules.
+
+To relink by hand, run the linker without arguments to reuse the recorded
+profile and overlay:
 
 ```sh
 git pull
-./link.sh --profile work
+./link.sh
 ```
 
-On Windows, run `git pull` and then `.\link.ps1 -Profile work`. Both steps are
-needed on every platform: the agent rule files (`CLAUDE.md`, `AGENTS.md`,
-`copilot-instructions.md`) are generated, so a pull alone leaves them unchanged.
+On Windows, run `git pull` and then `.\link.ps1`; the hook needs PowerShell 7
+(`pwsh`). Passing `--profile` without `--overlay` removes the overlay (see below).
 
 The linker records installed files and managed blocks in
 `~/.config/dotfiles/state.json`. Before replacing a file it saves its previous
@@ -194,7 +202,7 @@ sh ~/dotfiles-shared/link.sh --profile work --overlay ~/dotfiles-work
 ```
 
 Use `--profile home` with the separate home overlay on personal machines.
-Always pass `--overlay` when retaining it: omission removes the previous overlay's
+With `--profile`, always pass `--overlay` when retaining it: omission removes the previous overlay's
 unchanged owned files and replaces its managed blocks with shared configuration.
 Selecting another overlay performs the same cleanup before installing its additions.
 Existing references to the previous overlay outside managed blocks require review.

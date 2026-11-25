@@ -698,6 +698,166 @@ class LinkTests(unittest.TestCase):
             self.apply()
         self.assertEqual(len(self.snapshot()), 1)
 
+    def checkout(self):
+        """Make the fixture repo runnable the way users run it."""
+        for name in (
+            "link.py", "link.sh", "link.ps1", "dotfiles_profile.py",
+            "powershell/find-python.ps1", "claude/hooks/git-freshness.sh",
+        ):
+            (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, self.repo / name)
+
+    def env(self):
+        env = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith(("GIT_", "DOTFILES_", "COPILOT_", "WEZTERM_", "XDG_"))
+        }
+        env.update(
+            HOME=str(self.home), USERPROFILE=str(self.home), GIT_CONFIG_NOSYSTEM="1",
+            GIT_AUTHOR_NAME="Example", GIT_AUTHOR_EMAIL="dev@example.test",
+            GIT_COMMITTER_NAME="Example", GIT_COMMITTER_EMAIL="dev@example.test",
+        )
+        return env
+
+    def link(self, *args):
+        if os.name == "nt":
+            args += ("--powershell-profile", str(self.home / "Documents/PowerShell/profile.ps1"))
+        return subprocess.run(
+            [sys.executable, "-B", str(self.repo / "link.py"), *args],
+            env=self.env(), capture_output=True, text=True, check=False,
+        )
+
+    def git(self, *args, cwd=None):
+        result = subprocess.run(
+            ["git", *args], cwd=cwd or self.repo, env=self.env(),
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def test_rerun_without_arguments_keeps_profile_without_overlay(self):
+        self.checkout()
+        self.assertEqual(self.link("--profile", "work").returncode, 0)
+        self.write(self.repo / "agents/core.md", "Use small changes.\n")
+        result = self.link()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rules = (self.home / "AGENTS.md").read_text()
+        self.assertIn("Use small changes.", rules)
+        self.assertIn("Follow employer rules", rules)
+        state = json.loads((self.home / ".config/dotfiles/state.json").read_text())
+        self.assertEqual(state["profile"], "work")
+        self.assertNotIn("overlay", state)
+
+    def test_rerun_without_arguments_keeps_recorded_overlay(self):
+        self.checkout()
+        first = self.link("--profile", "home", "--overlay", str(self.overlay))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.write(self.repo / "agents/core.md", "Use small changes.\n")
+        result = self.link()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rules = (self.home / "AGENTS.md").read_text()
+        self.assertIn("Use small changes.", rules)
+        self.assertIn("Personal automation", rules)
+        self.assertEqual((self.home / ".config/private.txt").read_text(), "private overlay\n")
+
+    def test_rerun_refuses_when_recorded_overlay_is_gone(self):
+        self.checkout()
+        self.link("--profile", "home", "--overlay", str(self.overlay))
+        self.overlay.rename(self.base / "moved")
+        before = self.snapshot()
+        result = self.link()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("recorded overlay no longer exists", result.stderr)
+        self.assertEqual(before, self.snapshot())
+
+    def test_rerun_without_state_fails_as_before(self):
+        self.checkout()
+        result = self.link()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("select --profile", result.stderr)
+        self.assertEqual(self.snapshot(), {})
+
+    def test_hook_installed_in_checkout_and_overlay_and_removed_with_overlay(self):
+        self.checkout()
+        for checkout in (self.repo, self.overlay):
+            self.git("init", "-q", cwd=checkout)
+        result = self.link("--profile", "home", "--overlay", str(self.overlay))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        hooks = [path / ".git/hooks/post-merge" for path in (self.repo, self.overlay)]
+        for hook in hooks:
+            self.assertIn("link.", hook.read_text())
+        self.assertEqual(self.link("--profile", "work").returncode, 0)
+        self.assertTrue(hooks[0].exists())
+        self.assertFalse(hooks[1].exists())
+
+    def test_hook_never_replaces_a_hook_it_did_not_write(self):
+        self.checkout()
+        self.git("init", "-q")
+        hook = self.repo / ".git/hooks/post-merge"
+        self.write(hook, "#!/bin/sh\necho mine\n")
+        result = self.link("--profile", "work")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("did not write", result.stderr)
+        self.assertEqual(hook.read_text(), "#!/bin/sh\necho mine\n")
+        # A later relink still leaves it alone instead of adopting or removing it.
+        self.assertEqual(self.link().returncode, 0)
+        self.assertEqual(hook.read_text(), "#!/bin/sh\necho mine\n")
+
+    def linked_clone(self, *args):
+        """Link from a clone of the fixture repo; return the upstream repo."""
+        self.checkout()
+        upstream = self.repo
+        self.git("init", "-q")
+        self.git("add", ".")
+        self.git("commit", "-qm", "fixture")
+        self.repo = self.base / "clone"
+        self.git("clone", "-q", str(upstream), str(self.repo), cwd=self.base)
+        result = self.link(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.write(upstream / "agents/core.md", "Use small changes.\n")
+        self.git("commit", "-qam", "change rules", cwd=upstream)
+        return upstream
+
+    @unittest.skipIf(
+        os.name == "nt",
+        "pwsh takes $PROFILE from the real Documents folder, outside a temp home",
+    )
+    def test_pull_relinks_changed_rules(self):
+        self.linked_clone("--profile", "work")
+        self.assertNotIn("Use small changes.", (self.home / ".claude/CLAUDE.md").read_text())
+        self.git("pull", "-q")
+        self.assertIn("Use small changes.", (self.home / ".claude/CLAUDE.md").read_text())
+
+    def test_failed_relink_never_fails_the_pull(self):
+        self.linked_clone("--profile", "home", "--overlay", str(self.overlay))
+        self.overlay.rename(self.base / "moved")
+        result = self.git("pull", "-q")
+        self.assertIn("recorded overlay no longer exists", result.stderr)
+        self.assertIn("relink failed", result.stderr)
+        self.assertIn("Use small changes.", (self.repo / "agents/core.md").read_text())
+
+    @unittest.skipIf(os.name == "nt", "the Claude hooks are installed on Unix only")
+    def test_session_start_reports_stale_claude_rules(self):
+        self.checkout()
+        self.write(
+            self.repo / "profiles/shared.json",
+            json.dumps({"unix": {".claude/hooks/git-freshness.sh": "claude/hooks/git-freshness.sh"}}),
+        )
+        self.assertEqual(self.link("--profile", "work").returncode, 0)
+        env = self.env() | {"GIT_CEILING_DIRECTORIES": str(self.base)}
+
+        def session_start():
+            return subprocess.run(
+                ["sh", str(self.home / ".claude/hooks/git-freshness.sh")],
+                cwd=self.home, env=env, capture_output=True, text=True, check=False,
+            ).stdout
+
+        self.assertNotIn("stale", session_start())
+        self.write(self.repo / "agents/core.md", "Use small changes.\n")
+        self.assertEqual(
+            session_start().count("Claude rules are stale"), 1
+        )
+
 
 class PolicyTests(unittest.TestCase):
     def load_policy_module(self):
