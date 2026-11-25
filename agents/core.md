@@ -4,7 +4,7 @@ Write scripts, wizards included, as Python uv single-file scripts: `#!/usr/bin/e
 Run Python through uv (`uv run file.py`, `uv run --python 3.12 python -m ...`, `uv run --with <pkg> python ...`, and `uv pip` or `uv tool` for installs), never bare `python`, `python3`, or `pip`: the system Python is old and differs per machine. Exceptions: a project with its own Python tooling (a venv, Poetry, tox, a documented command) keeps it, and without uv, use the system Python. A one-off `uv run` in a project that doesn't use uv gets `--no-project`, so it leaves no `.venv` or `uv.lock`.
 
 # Shell quoting
-Write multi-line text (scripts, issue/PR bodies, commit messages, plists) to a file with the Write tool and pass the file (`uv run file`, `gh … --body-file`, `git commit -F`) instead of building it with `printf`, `echo`, or a heredoc in a Bash call.
+Write multi-line text (scripts, issue/PR bodies, commit messages, plists) to a file with a file-writing tool and pass the file (`uv run file`, `gh … --body-file`, `git commit -F`) instead of building it with `printf`, `echo`, or a heredoc in a Bash call.
 
 # Evidence before fix
 When debugging, produce evidence for the diagnosis (a failing test, instrumentation, a log excerpt) before changing code.
