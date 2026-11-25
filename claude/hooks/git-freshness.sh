@@ -1,5 +1,12 @@
 #!/bin/sh
 # SessionStart: surface divergence from remote. Informational only — never blocks, never pulls.
+# The linker installs this as a symlink into the dotfiles checkout; a dry run
+# shows whether that checkout would regenerate ~/.claude/CLAUDE.md.
+self=$(readlink "$0" 2>/dev/null) || self=$0
+dot=${self%/claude/hooks/*}
+if [ -f "$dot/link.sh" ] && sh "$dot/link.sh" --dry-run 2>/dev/null | grep -q '\.claude/CLAUDE\.md$'; then
+  echo "Claude rules are stale: ~/.claude/CLAUDE.md differs from $dot; run: sh $dot/link.sh"
+fi
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 branch=$(git branch --show-current)
 [ -n "$branch" ] || exit 0

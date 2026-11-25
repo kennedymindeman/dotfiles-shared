@@ -10,11 +10,14 @@ import re
 import shlex
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 from dotfiles_profile import resolve_profile
+
+HOOK_MARK = "dotfiles:relink-hook"
 
 
 def digest(data):
@@ -352,6 +355,21 @@ class Installer:
                 raise ValueError(f"configuration directory is not writable: {parent}")
         for relative, action, _ in self.changes:
             print(f"{action}: {self.target(relative)}")
+        hooks = [
+            Path(name) for name, text in self.hooks.items()
+            if not Path(name).is_file() or Path(name).read_bytes() != text.encode()
+        ]
+        # A recorded hook the user has since changed is no longer ours to remove.
+        stale = [
+            Path(name) for name, sha in self.old.get("hooks", {}).items()
+            if name not in self.hooks
+            and Path(name).is_file()
+            and digest(Path(name).read_bytes()) == sha
+        ]
+        for path in hooks:
+            print(f"hook: {path}")
+        for path in stale:
+            print(f"remove: {path}")
         if dry_run:
             return
         backup = None
@@ -382,11 +400,17 @@ class Installer:
                 atomic_write(path, value.read_bytes())
             elif action == "bytes":
                 atomic_write(path, value)
+        for path in hooks:
+            atomic_write(path, self.hooks[str(path)].encode())
+            path.chmod(0o755)
+        for path in stale:
+            path.unlink()
         state = {
             "profile": self.profile,
             "files": self.records,
             "copilot_home": str(self.copilot_home),
             "copilot_subagents": self.subagents,
+            "hooks": {name: digest(text.encode()) for name, text in self.hooks.items()},
         }
         if self.overlay:
             state["overlay"] = str(self.overlay)
@@ -486,6 +510,63 @@ def check_home_integrations(installer, powershell_profile=None):
                     raise ValueError(
                         f"stop and disable the previous overlay service before switching: {path}"
                     )
+
+
+def relink_hooks(repo, overlay, platform, recorded):
+    """Return the post-merge hooks to install, keyed by path.
+
+    The overlay gets the hook too, since it may hold this checkout as a
+    submodule. The hook always exits 0 so a pull never fails.
+    """
+    script = repo / ("link.ps1" if platform == "windows" else "link.sh")
+    command = ("pwsh -NoProfile -File " if platform == "windows" else "sh ") + (
+        shlex.quote(str(script).replace(chr(92), "/"))
+    )
+    hook = (
+        f"#!/bin/sh\n# {HOOK_MARK}\n{command} || echo "
+        + shlex.quote(f"dotfiles: relink failed; fix the error above, then run: {command}")
+        + " >&2\nexit 0\n"
+    )
+    # A hook's GIT_DIR would point rev-parse at the repository being pulled.
+    git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    hooks = {}
+    for checkout in (repo, overlay):
+        if not checkout or not (checkout / ".git").exists():
+            continue
+        found = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", "--git-path", "hooks/post-merge"],
+            capture_output=True, text=True, env=git_env, check=False,
+        )
+        raw = checkout / found.stdout.strip()
+        path = raw.resolve()
+        shared_dir = subprocess.run(
+            ["git", "-C", str(checkout), "config", "--get", "core.hooksPath"],
+            capture_output=True, text=True, env=git_env, check=False,
+        ).stdout.strip()
+        if shared_dir:
+            # That folder serves other repositories too; a hook there would
+            # relink after their pulls.
+            print(
+                f"warning: no relink hook for {checkout}: core.hooksPath is set to {shared_dir}",
+                file=sys.stderr,
+            )
+        elif found.returncode:
+            print(f"warning: no relink hook for {checkout}: {found.stderr.strip()}", file=sys.stderr)
+        elif raw.is_symlink() or (
+            path.exists()
+            and path.read_bytes() != hook.encode()
+            and digest(path.read_bytes()) != recorded.get(str(path))
+        ):
+            # Ours only while it is byte for byte what a link wrote: a symlink,
+            # another tool's hook, or our hook edited since is the user's.
+            print(
+                f"warning: keeping {path}, which dotfiles did not write or which changed since; "
+                f"pulls in {checkout} will not relink",
+                file=sys.stderr,
+            )
+        else:
+            hooks[str(path)] = hook
+    return hooks
 
 
 def plan(
@@ -645,6 +726,7 @@ def plan(
     # Additions cannot replace shared files, generated blocks, or ownership state.
     for relative, source in additions.items():
         installer.file(relative, source, overlay)
+    installer.hooks = relink_hooks(repo, overlay, platform, installer.old.get("hooks", {}))
     return installer
 
 
@@ -659,6 +741,17 @@ def main(argv=None):
     try:
         home = Path.home()
         copilot_home = Path(os.environ.get("COPILOT_HOME", home / ".copilot"))
+        # Without --profile, rerun with what the last link recorded.
+        state = read_json(home / ".config/dotfiles/state.json", {})
+        if not args.profile and isinstance(state, dict) and state.get("profile"):
+            args.profile = state["profile"]
+            if not args.overlay and state.get("overlay"):
+                args.overlay = Path(state["overlay"])
+                if not args.overlay.is_dir():
+                    raise ValueError(
+                        f"recorded overlay no longer exists: {args.overlay}; restore "
+                        "it, or relink with --profile and the --overlay to use"
+                    )
         profile = resolve_profile(args.profile, home)
         platform = "windows" if os.name == "nt" else sys.platform
         installer = plan(
