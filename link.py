@@ -512,7 +512,7 @@ def check_home_integrations(installer, powershell_profile=None):
                     )
 
 
-def relink_hooks(repo, overlay, platform):
+def relink_hooks(repo, overlay, platform, recorded):
     """Return the post-merge hooks to install, keyed by path.
 
     The overlay gets the hook too, since it may hold this checkout as a
@@ -537,7 +537,8 @@ def relink_hooks(repo, overlay, platform):
             ["git", "-C", str(checkout), "rev-parse", "--git-path", "hooks/post-merge"],
             capture_output=True, text=True, env=git_env, check=False,
         )
-        path = (checkout / found.stdout.strip()).resolve()
+        raw = checkout / found.stdout.strip()
+        path = raw.resolve()
         shared_dir = subprocess.run(
             ["git", "-C", str(checkout), "config", "--get", "core.hooksPath"],
             capture_output=True, text=True, env=git_env, check=False,
@@ -551,9 +552,15 @@ def relink_hooks(repo, overlay, platform):
             )
         elif found.returncode:
             print(f"warning: no relink hook for {checkout}: {found.stderr.strip()}", file=sys.stderr)
-        elif path.exists() and HOOK_MARK not in path.read_text(encoding="utf-8", errors="replace"):
+        elif raw.is_symlink() or (
+            path.exists()
+            and path.read_bytes() != hook.encode()
+            and digest(path.read_bytes()) != recorded.get(str(path))
+        ):
+            # Ours only while it is byte for byte what a link wrote: a symlink,
+            # another tool's hook, or our hook edited since is the user's.
             print(
-                f"warning: keeping {path}, which dotfiles did not write; "
+                f"warning: keeping {path}, which dotfiles did not write or which changed since; "
                 f"pulls in {checkout} will not relink",
                 file=sys.stderr,
             )
@@ -719,7 +726,7 @@ def plan(
     # Additions cannot replace shared files, generated blocks, or ownership state.
     for relative, source in additions.items():
         installer.file(relative, source, overlay)
-    installer.hooks = relink_hooks(repo, overlay, platform)
+    installer.hooks = relink_hooks(repo, overlay, platform, installer.old.get("hooks", {}))
     return installer
 
 

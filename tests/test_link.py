@@ -813,6 +813,30 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(self.link().returncode, 0)
         self.assertEqual(hook.read_text(), "#!/bin/sh\necho mine\n")
 
+    def test_hook_edited_since_the_link_is_kept(self):
+        self.checkout()
+        self.git("init", "-q")
+        self.assertEqual(self.link("--profile", "work").returncode, 0)
+        hook = self.repo / ".git/hooks/post-merge"
+        edited = hook.read_text() + "echo my own step\n"
+        hook.write_text(edited)
+        result = self.link()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("changed since", result.stderr)
+        self.assertEqual(hook.read_text(), edited)
+
+    def test_hook_is_not_written_through_a_symlink(self):
+        self.checkout()
+        self.git("init", "-q")
+        hook = self.repo / ".git/hooks/post-merge"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        target = self.repo / "missing-hook-target"
+        hook.symlink_to(target)
+        result = self.link("--profile", "work")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(target.exists())
+        self.assertTrue(hook.is_symlink())
+
     def test_hook_stays_out_of_a_shared_hooks_folder(self):
         self.checkout()
         self.git("init", "-q")

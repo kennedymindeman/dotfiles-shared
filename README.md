@@ -148,8 +148,10 @@ To pick up changes, pull; the hook relinks. The linker installs a `post-merge`
 Git hook in this checkout, and in the overlay when it is a Git checkout, that
 reruns the linker with the recorded profile and overlay. The hook never fails
 the pull: on a linker error it prints the error and the command to rerun. The
-linker leaves an existing hook it did not write in place and prints a warning;
-relink by hand in that checkout. Claude Code's SessionStart freshness hook also
+linker leaves an existing hook in place and prints a warning when it did not
+write that hook, when the hook was edited after a link, or when it is a symlink.
+It also installs nothing when `core.hooksPath` is set, since that folder serves
+other repositories. In each case, relink by hand in that checkout. Claude Code's SessionStart freshness hook also
 reports when `~/.claude/CLAUDE.md` is older than this checkout's rules.
 
 To relink by hand, run the linker without arguments to reuse the recorded
