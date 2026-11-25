@@ -142,7 +142,9 @@ The profile resolves from `--profile`, then `DOTFILES_ENV`, then `~/.dotfiles-en
 There is no default. Invalid or absent choices stop before configuration writes.
 `--dry-run` validates conflicts and prints planned changes without writing files.
 
-To pick up changes, pull this checkout and rerun the linker with your profile:
+To pick up changes, pull this checkout and rerun the linker with the same
+arguments this machine was linked with: its profile, and `--overlay` when it
+uses one, since omitting the overlay removes it (see below):
 
 ```sh
 git pull
