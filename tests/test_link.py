@@ -975,6 +975,65 @@ class LinkTests(unittest.TestCase):
         self.git("pull", "-q")
         self.assertIn("Use small changes.", (self.home / ".claude/CLAUDE.md").read_text())
 
+    def overlay_with_submodule(self):
+        """Link from a clone of an overlay that holds the repo as a submodule.
+
+        Returns the upstream repo and overlay, and a git runner that may use
+        local-path submodule remotes.
+        """
+        self.checkout()
+        upstream, overlay = self.repo, self.overlay
+        local = {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "protocol.file.allow",
+            "GIT_CONFIG_VALUE_0": "always",
+        }
+
+        def git(*args, cwd):
+            result = subprocess.run(
+                ["git", *args], cwd=cwd, env=self.env() | local,
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result
+
+        git("init", "-q", cwd=upstream)
+        git("add", ".", cwd=upstream)
+        git("commit", "-qm", "fixture", cwd=upstream)
+        git("init", "-q", cwd=overlay)
+        git("submodule", "add", "-q", str(upstream), "shared", cwd=overlay)
+        git("add", ".", cwd=overlay)
+        git("commit", "-qm", "overlay", cwd=overlay)
+        self.overlay = self.base / "overlay-clone"
+        git("clone", "-q", "--recurse-submodules", str(overlay), str(self.overlay), cwd=self.base)
+        self.repo = self.overlay / "shared"
+        result = self.link("--profile", "home", "--overlay", str(self.overlay))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.write(upstream / "agents/core.md", "Use small changes.\n")
+        git("commit", "-qam", "change rules", cwd=upstream)
+        git("pull", "-q", cwd=overlay / "shared")
+        git("commit", "-qam", "bump", cwd=overlay)
+        return git
+
+    @unittest.skipIf(
+        os.name == "nt",
+        "pwsh takes $PROFILE from the real Documents folder, outside a temp home",
+    )
+    def test_overlay_pull_relinks_with_the_updated_submodule(self):
+        git = self.overlay_with_submodule()
+        git("pull", "-q", cwd=self.overlay)
+        self.assertIn("Use small changes.", (self.home / ".claude/CLAUDE.md").read_text())
+
+    def test_overlay_pull_leaves_a_submodule_on_a_branch_alone(self):
+        git = self.overlay_with_submodule()
+        git("checkout", "-qb", "work-in-progress", cwd=self.repo)
+        before = git("rev-parse", "HEAD", cwd=self.repo).stdout
+        git("pull", "-q", cwd=self.overlay)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.repo).stdout, before)
+        self.assertEqual(
+            git("symbolic-ref", "--short", "HEAD", cwd=self.repo).stdout.strip(), "work-in-progress"
+        )
+
     def test_failed_relink_never_fails_the_pull(self):
         self.linked_clone("--profile", "home", "--overlay", str(self.overlay))
         self.overlay.rename(self.base / "moved")

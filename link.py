@@ -551,8 +551,8 @@ def relink_hooks(repo, overlay, platform, recorded):
     command = ("pwsh -NoProfile -File " if platform == "windows" else "sh ") + (
         shlex.quote(str(script).replace(chr(92), "/"))
     )
-    hook = (
-        f"#!/bin/sh\n# {HOOK_MARK}\n{command} || echo "
+    relink = (
+        f"{command} || echo "
         + shlex.quote(f"dotfiles: relink failed; fix the error above, then run: {command}")
         + " >&2\nexit 0\n"
     )
@@ -562,6 +562,26 @@ def relink_hooks(repo, overlay, platform, recorded):
     for checkout in (repo, overlay):
         if not checkout or not (checkout / ".git").exists():
             continue
+        hook = f"#!/bin/sh\n# {HOOK_MARK}\n"
+        if checkout != repo and repo.is_relative_to(checkout):
+            inner = repo.relative_to(checkout).as_posix()
+            entry = subprocess.run(
+                ["git", "-C", str(checkout), "ls-files", "--stage", "--", inner],
+                capture_output=True, text=True, env=git_env, check=False,
+            ).stdout
+            if entry.startswith("160000 "):
+                # A pull runs this hook before it updates submodules, so the
+                # relink would use the old copy. A submodule on a branch is
+                # being worked on and is left alone.
+                top, sub = (shlex.quote(str(p).replace(chr(92), "/")) for p in (checkout, repo))
+                hook += (
+                    "(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\n"
+                    f" git -C {sub} symbolic-ref -q HEAD >/dev/null ||\n"
+                    f" git -C {top} submodule update --init -- {shlex.quote(inner)}) || echo "
+                    + shlex.quote(f"dotfiles: could not update {inner}; relinking with the copy on disk")
+                    + " >&2\n"
+                )
+        hook += relink
         found = subprocess.run(
             ["git", "-C", str(checkout), "rev-parse", "--git-path", "hooks/post-merge"],
             capture_output=True, text=True, env=git_env, check=False,
