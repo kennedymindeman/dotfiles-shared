@@ -7,8 +7,8 @@ Commit, publish, merge, deploy, or change tickets only when explicitly authorize
 # Credentials
 Use the employer's approved Git identity. Keep credentials in machine-local configuration or the employer's credential manager.
 
-# Delegation
-When delegation is available and authorized, give each agent a bounded task.
+# Delegation at work
+Delegate only when delegation is available and authorized, and give each agent a bounded task.
 
 # Deliverables
 Save reports and other deliverables in the repository's approved location. Provide the local path or an approved internal link.
