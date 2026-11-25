@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -720,12 +721,21 @@ class LinkTests(unittest.TestCase):
         return env
 
     def link(self, *args):
+        """Run the command line as `link.py` in the fixture repo would."""
         if os.name == "nt":
             args += ("--powershell-profile", str(self.home / "Documents/PowerShell/profile.ps1"))
-        return subprocess.run(
-            [sys.executable, "-B", str(self.repo / "link.py"), *args],
-            env=self.env(), capture_output=True, text=True, check=False,
-        )
+        stderr, code = io.StringIO(), 0
+        with (
+            patch.dict(os.environ, self.env(), clear=True),
+            patch.object(link, "__file__", str(self.repo / "link.py")),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr),
+        ):
+            try:
+                link.main(list(args))
+            except SystemExit as error:
+                code = error.code
+        return SimpleNamespace(returncode=code, stderr=stderr.getvalue())
 
     def git(self, *args, cwd=None):
         result = subprocess.run(
