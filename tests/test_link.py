@@ -813,6 +813,18 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(self.link().returncode, 0)
         self.assertEqual(hook.read_text(), "#!/bin/sh\necho mine\n")
 
+    def test_hook_stays_out_of_a_shared_hooks_folder(self):
+        self.checkout()
+        self.git("init", "-q")
+        shared_hooks = self.base / "shared-hooks"
+        shared_hooks.mkdir()
+        self.git("config", "core.hooksPath", str(shared_hooks))
+        result = self.link("--profile", "work")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("core.hooksPath is set", result.stderr)
+        self.assertEqual(list(shared_hooks.iterdir()), [])
+        self.assertFalse((self.repo / ".git/hooks/post-merge").exists())
+
     def linked_clone(self, *args):
         """Link from a clone of the fixture repo; return the upstream repo."""
         self.checkout()

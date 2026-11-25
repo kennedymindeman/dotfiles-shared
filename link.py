@@ -538,7 +538,18 @@ def relink_hooks(repo, overlay, platform):
             capture_output=True, text=True, env=git_env, check=False,
         )
         path = (checkout / found.stdout.strip()).resolve()
-        if found.returncode:
+        shared_dir = subprocess.run(
+            ["git", "-C", str(checkout), "config", "--get", "core.hooksPath"],
+            capture_output=True, text=True, env=git_env, check=False,
+        ).stdout.strip()
+        if shared_dir:
+            # That folder serves other repositories too; a hook there would
+            # relink after their pulls.
+            print(
+                f"warning: no relink hook for {checkout}: core.hooksPath is set to {shared_dir}",
+                file=sys.stderr,
+            )
+        elif found.returncode:
             print(f"warning: no relink hook for {checkout}: {found.stderr.strip()}", file=sys.stderr)
         elif path.exists() and HOOK_MARK not in path.read_text(encoding="utf-8", errors="replace"):
             print(
