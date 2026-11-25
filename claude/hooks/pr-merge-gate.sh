@@ -519,10 +519,13 @@ fi
 selfverdict="Self review: pass $sha"
 if [ -z "$covered" ] && printf '%s\n' "$firsts" | grep -Fxq "$selfverdict"; then
   size=$(gh api "repos/$owner/$name/pulls/$num" \
-    -q '"\(.additions + .deletions) \(.changed_files)"' 2>&1) \
+    -q 'if ([.additions, .deletions, .changed_files] | all(type == "number"))
+        then "\(.head.sha) \(.additions + .deletions) \(.changed_files)" else "unreadable" end' 2>&1) \
     || cantread "size" "$owner/$name#$num" "$size"
+  # The counts must describe the head checked above, not one pushed since.
   set -f; set -- $size; set +f
-  [ $# -eq 2 ] || cantread "size" "$owner/$name#$num" "$size"
+  [ $# -eq 3 ] && [ "$1" = "$sha" ] || cantread "size" "$owner/$name#$num at $sha" "$size"
+  shift
   case "$1$2" in *[!0123456789]*) cantread "size" "$owner/$name#$num" "$size" ;; esac
   if [ ${#1} -le 6 ] && [ ${#2} -le 6 ] && [ "$1" -le $SELF_LINES ] && [ "$2" -le $SELF_FILES ]; then
     covered=$sha
