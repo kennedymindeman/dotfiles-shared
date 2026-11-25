@@ -298,10 +298,10 @@ class LinkTests(unittest.TestCase):
 
     def test_home_to_work_removes_owned_private_files_and_rules(self):
         self.apply("home", self.overlay)
-        self.assertIn("Personal automation", (self.home / "AGENTS.md").read_text())
+        self.assertIn("Personal automation", (self.home / ".codex/AGENTS.md").read_text())
         self.apply("work")
         self.assertFalse((self.home / ".config/private.txt").exists())
-        self.assertNotIn("Personal automation", (self.home / "AGENTS.md").read_text())
+        self.assertNotIn("Personal automation", (self.home / ".codex/AGENTS.md").read_text())
         self.assertNotIn("gitconfig.home", (self.home / ".gitconfig").read_text())
         settings = json.loads((self.home / ".copilot/settings.json").read_text())
         self.assertNotIn("research", settings["subagents"]["agents"])
@@ -314,7 +314,6 @@ class LinkTests(unittest.TestCase):
         self.assertIn("Personal automation", claude)
         self.assertIn("Claude mechanics", claude)
         for relative in (
-            "AGENTS.md",
             ".codex/AGENTS.md",
             ".copilot/copilot-instructions.md",
         ):
@@ -326,6 +325,109 @@ class LinkTests(unittest.TestCase):
         claude = (self.home / ".claude/CLAUDE.md").read_text()
         self.assertNotIn("Claude mechanics", claude)
         self.assertIn("Use focused changes", claude)
+
+    def previous_home_agents(self, user_text=""):
+        """Leave ~/AGENTS.md as a link from before #94 left it."""
+        self.apply()
+        block = "<!-- dotfiles:begin -->\nUse focused changes.\n<!-- dotfiles:end -->"
+        state_path = self.home / ".config/dotfiles/state.json"
+        state = json.loads(state_path.read_text())
+        state["files"]["AGENTS.md"] = {
+            "block": link.digest(block.encode()),
+            "markers": ["<!-- dotfiles:begin -->", "<!-- dotfiles:end -->"],
+        }
+        state_path.write_text(json.dumps(state))
+        content = user_text + ("\n" if user_text else "") + block + "\n"
+        self.write(self.home / "AGENTS.md", content)
+        return content
+
+    def backups(self, relative):
+        return [
+            path.read_text()
+            for path in (self.home / ".config/dotfiles/backups").glob(f"*/{relative}")
+        ]
+
+    def test_fresh_link_writes_rules_only_to_harness_files(self):
+        for profile, overlay, rule in (
+            ("work", None, "Follow employer rules"),
+            ("home", self.overlay, "Personal automation"),
+        ):
+            with self.subTest(profile=profile):
+                self.apply(profile, overlay)
+                self.assertFalse((self.home / "AGENTS.md").exists())
+                for relative in (
+                    ".codex/AGENTS.md",
+                    ".claude/CLAUDE.md",
+                    ".copilot/copilot-instructions.md",
+                ):
+                    text = (self.home / relative).read_text()
+                    self.assertIn("Use focused changes", text, relative)
+                    self.assertIn(rule, text, relative)
+
+    def test_previous_home_rules_are_removed_and_backed_up(self):
+        content = self.previous_home_agents()
+        self.apply()
+        self.assertFalse((self.home / "AGENTS.md").exists())
+        self.assertEqual(self.backups("AGENTS.md"), [content])
+        state = json.loads((self.home / ".config/dotfiles/state.json").read_text())
+        self.assertNotIn("AGENTS.md", state["files"])
+        before = self.snapshot()
+        self.apply()
+        self.assertEqual(before, self.snapshot())
+
+    def test_previous_home_rules_leave_user_text(self):
+        content = self.previous_home_agents("# mine\nKeep me.\n")
+        self.apply("home", self.overlay)
+        self.assertEqual((self.home / "AGENTS.md").read_text(), "# mine\nKeep me.\n")
+        self.assertEqual(self.backups("AGENTS.md"), [content])
+        before = self.snapshot()
+        self.apply("home", self.overlay)
+        self.assertEqual(before, self.snapshot())
+
+    def test_user_home_agents_without_block_is_untouched(self):
+        for profile, overlay in (("work", None), ("home", self.overlay)):
+            with self.subTest(profile=profile):
+                self.write(self.home / "AGENTS.md", "Personal standing authorization.\n")
+                self.apply(profile, overlay)
+                self.assertEqual(
+                    (self.home / "AGENTS.md").read_text(),
+                    "Personal standing authorization.\n",
+                )
+                self.assertEqual(self.backups("AGENTS.md"), [])
+
+    def test_dry_run_reports_home_rules_removal_and_changes_nothing(self):
+        self.previous_home_agents()
+        before = self.snapshot()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.plan().apply(True)
+        self.assertIn(f"remove: {self.home / 'AGENTS.md'}", output.getvalue())
+        self.assertEqual(before, self.snapshot())
+
+    @unittest.skipIf(os.name == "nt", "symlink creation requires Windows privileges")
+    def test_legacy_codex_link_to_home_rules_becomes_managed_file(self):
+        legacy = "Rules from the old installer.\n"
+        self.write(
+            self.overlay / "profiles/legacy.json",
+            json.dumps({"AGENTS.md": [link.digest(legacy.encode())]}),
+        )
+        for name, home_rules in (("legacy file", legacy), ("dangling", None)):
+            with self.subTest(name):
+                for path in (self.home / "AGENTS.md", self.home / ".codex/AGENTS.md"):
+                    path.unlink(missing_ok=True)
+                if home_rules:
+                    self.write(self.home / "AGENTS.md", home_rules)
+                (self.home / ".codex").mkdir(exist_ok=True)
+                (self.home / ".codex/AGENTS.md").symlink_to(self.home / "AGENTS.md")
+                self.apply("home", self.overlay)
+                codex = self.home / ".codex/AGENTS.md"
+                self.assertFalse(codex.is_symlink())
+                self.assertIn("Personal automation", codex.read_text())
+                self.assertFalse((self.home / "AGENTS.md").exists())
+                before = self.snapshot()
+                self.apply("home", self.overlay)
+                self.assertEqual(before, self.snapshot())
+        self.assertEqual(self.backups("AGENTS.md"), [legacy])
 
     def test_rules_render_as_utf8_whatever_the_locale_encoding(self):
         text = "Dash \u2014 ellipsis\u2026 \u2018quoted\u2019"
@@ -340,7 +442,6 @@ class LinkTests(unittest.TestCase):
             self.apply("home", self.overlay)
         expected = text.encode("utf-8")
         for relative, sources in {
-            "AGENTS.md": ("Core", "Home"),
             ".codex/AGENTS.md": ("Core", "Home"),
             ".claude/CLAUDE.md": ("Core", "Home", "Claude"),
             ".copilot/copilot-instructions.md": ("Copilot", "Core", "Home"),
@@ -362,7 +463,7 @@ class LinkTests(unittest.TestCase):
 
     def test_modified_managed_block_blocks_transition(self):
         self.apply("home", self.overlay)
-        target = self.home / "AGENTS.md"
+        target = self.home / ".codex/AGENTS.md"
         target.write_text(
             target.read_text().replace("Personal automation", "User customization")
         )
@@ -372,13 +473,13 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
 
     def test_unmanaged_agents_need_review_for_work(self):
-        self.write(self.home / "AGENTS.md", "Unreviewed global automation")
+        self.write(self.home / ".codex/AGENTS.md", "Unreviewed global automation")
         with self.assertRaisesRegex(ValueError, "existing global agent instructions"):
             self.apply("work")
         self.assertEqual(len(self.snapshot()), 1)
 
     def test_unowned_rules_outside_home_block_block_work(self):
-        self.write(self.home / "AGENTS.md", "Personal standing authorization.\n")
+        self.write(self.home / ".codex/AGENTS.md", "Personal standing authorization.\n")
         self.apply("home", self.overlay)
         before = self.snapshot()
         with self.assertRaisesRegex(ValueError, "existing global agent instructions"):
@@ -388,19 +489,19 @@ class LinkTests(unittest.TestCase):
     def test_rules_repeated_outside_block_warn_and_are_kept(self):
         self.write(self.repo / "agents/core.md", "# focus\nUse focused changes.\n")
         stale = "# focus\nOld wording.\n\n# extra\nKeep me.\n"
-        self.write(self.home / "AGENTS.md", stale)
+        self.write(self.home / ".codex/AGENTS.md", stale)
         output = io.StringIO()
         with contextlib.redirect_stderr(output):
             self.apply("home", self.overlay)
         self.assertIn("warning", output.getvalue())
-        self.assertIn(str(self.home / "AGENTS.md"), output.getvalue())
+        self.assertIn(str(self.home / ".codex/AGENTS.md"), output.getvalue())
         self.assertIn("# focus", output.getvalue())
         self.assertNotIn("# extra", output.getvalue())
-        self.assertTrue((self.home / "AGENTS.md").read_text().startswith(stale))
+        self.assertTrue((self.home / ".codex/AGENTS.md").read_text().startswith(stale))
 
     def test_camel_case_copy_of_sentence_case_rule_warns(self):
         self.write(self.repo / "agents/core.md", "# PR authoring\nWrite titles.\n")
-        self.write(self.home / "AGENTS.md", "# prAuthoring\nOld wording.\n")
+        self.write(self.home / ".codex/AGENTS.md", "# prAuthoring\nOld wording.\n")
         output = io.StringIO()
         with contextlib.redirect_stderr(output):
             self.apply("home", self.overlay)
@@ -409,7 +510,7 @@ class LinkTests(unittest.TestCase):
 
     def test_distinct_rules_outside_block_do_not_warn(self):
         self.write(self.repo / "agents/core.md", "# focus\nUse focused changes.\n")
-        self.write(self.home / "AGENTS.md", "# extra\nKeep me.\n")
+        self.write(self.home / ".codex/AGENTS.md", "# extra\nKeep me.\n")
         output = io.StringIO()
         with contextlib.redirect_stderr(output):
             self.apply("home", self.overlay)
@@ -418,7 +519,7 @@ class LinkTests(unittest.TestCase):
     def test_fenced_comments_are_not_headings(self):
         fence = "```sh\n# install\nmake\n```\n"
         self.write(self.repo / "agents/core.md", "# focus\n" + fence)
-        self.write(self.home / "AGENTS.md", "~~~\n# focus\n~~~\n" + fence)
+        self.write(self.home / ".codex/AGENTS.md", "~~~\n# focus\n~~~\n" + fence)
         output = io.StringIO()
         with contextlib.redirect_stderr(output):
             self.apply("home", self.overlay)
@@ -497,9 +598,9 @@ class LinkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"profiles[/\\]home\.json"):
             self.apply("home", first)
         self.apply("work", first)
-        self.assertIn("Follow employer rules", (self.home / "AGENTS.md").read_text())
-        self.assertIn("work-overlay instructions", (self.home / "AGENTS.md").read_text())
-        self.assertNotIn("UNSELECTED HOME", (self.home / "AGENTS.md").read_text())
+        self.assertIn("Follow employer rules", (self.home / ".codex/AGENTS.md").read_text())
+        self.assertIn("work-overlay instructions", (self.home / ".codex/AGENTS.md").read_text())
+        self.assertNotIn("UNSELECTED HOME", (self.home / ".codex/AGENTS.md").read_text())
         self.assertIn("gitconfig.work", (self.home / ".gitconfig").read_text())
         self.assertNotIn("gitconfig.home", (self.home / ".gitconfig").read_text())
         self.assertEqual((self.home / ".config/work.txt").read_text(), "work-overlay configuration\n")
@@ -507,8 +608,8 @@ class LinkTests(unittest.TestCase):
         self.apply("work", first)
         self.assertEqual(before, self.snapshot())
         self.apply("work", second)
-        self.assertNotIn("work-overlay instructions", (self.home / "AGENTS.md").read_text())
-        self.assertIn("replacement instructions", (self.home / "AGENTS.md").read_text())
+        self.assertNotIn("work-overlay instructions", (self.home / ".codex/AGENTS.md").read_text())
+        self.assertIn("replacement instructions", (self.home / ".codex/AGENTS.md").read_text())
         self.assertEqual((self.home / ".config/work.txt").read_text(), "replacement configuration\n")
         self.apply("work")
         self.assertFalse((self.home / ".config/work.txt").exists())
@@ -539,15 +640,15 @@ class LinkTests(unittest.TestCase):
         self.assertEqual((self.home / ".dotfiles-env").read_text(), "work\n")
         self.apply("home", self.overlay)
         self.assertFalse((self.home / ".config/work.txt").exists())
-        self.assertNotIn("work-overlay instructions", (self.home / "AGENTS.md").read_text())
-        self.assertIn("Personal automation", (self.home / "AGENTS.md").read_text())
+        self.assertNotIn("work-overlay instructions", (self.home / ".codex/AGENTS.md").read_text())
+        self.assertIn("Personal automation", (self.home / ".codex/AGENTS.md").read_text())
 
     def test_overlay_can_omit_all_optional_files(self):
         overlay = self.base / "empty-work"
         self.write(overlay / "profiles/work.json", "{}")
         self.apply("work", overlay)
         self.assertNotIn("gitconfig.work", (self.home / ".gitconfig").read_text())
-        self.assertIn("Follow employer rules", (self.home / "AGENTS.md").read_text())
+        self.assertIn("Follow employer rules", (self.home / ".codex/AGENTS.md").read_text())
 
     def test_overlay_sensitive_paths_reach_copilot_settings(self):
         self.write(
@@ -751,7 +852,7 @@ class LinkTests(unittest.TestCase):
         self.write(self.repo / "agents/core.md", "Use small changes.\n")
         result = self.link()
         self.assertEqual(result.returncode, 0, result.stderr)
-        rules = (self.home / "AGENTS.md").read_text()
+        rules = (self.home / ".codex/AGENTS.md").read_text()
         self.assertIn("Use small changes.", rules)
         self.assertIn("Follow employer rules", rules)
         state = json.loads((self.home / ".config/dotfiles/state.json").read_text())
@@ -765,7 +866,7 @@ class LinkTests(unittest.TestCase):
         self.write(self.repo / "agents/core.md", "Use small changes.\n")
         result = self.link()
         self.assertEqual(result.returncode, 0, result.stderr)
-        rules = (self.home / "AGENTS.md").read_text()
+        rules = (self.home / ".codex/AGENTS.md").read_text()
         self.assertIn("Use small changes.", rules)
         self.assertIn("Personal automation", rules)
         self.assertEqual((self.home / ".config/private.txt").read_text(), "private overlay\n")

@@ -206,7 +206,12 @@ class Installer:
                 self.overlay
                 and relative == ".codex/AGENTS.md"
                 and path.resolve() == (self.home / "AGENTS.md").resolve()
-                and digest(path.read_bytes()) in self.legacy.get("AGENTS.md", [])
+                # A dangling link held nothing; an earlier run may have removed
+                # ~/AGENTS.md before replacing this link.
+                and (
+                    not path.exists()
+                    or digest(path.read_bytes()) in self.legacy.get("AGENTS.md", [])
+                )
             )
             if not old_agents_link and (
                 not legacy_source or not self.legacy_link(path, legacy_source)
@@ -332,6 +337,30 @@ class Installer:
                 raise ValueError(
                     f"profile switch needs review of modified file: {path}"
                 )
+
+    def retire_home_agents(self):
+        # Copilot and Codex also read AGENTS.md from the working directory, so a
+        # ~/AGENTS.md doubled the rules in sessions started in the home directory.
+        # Take back what earlier links wrote there; leave user text alone.
+        self.old["files"].pop("AGENTS.md", None)
+        path = self.target("AGENTS.md")
+        if not path.is_file() or path.is_symlink():
+            return
+        text = path.read_text(encoding="utf-8-sig")
+        pattern = re.compile(
+            r"<!-- dotfiles:begin -->\n.*?\n<!-- dotfiles:end -->\n?", re.DOTALL
+        )
+        # The old installer's exact output counts as managed, as in block().
+        if digest(text.encode()) in self.legacy.get("AGENTS.md", []):
+            text = ""
+        elif not pattern.search(text):
+            return
+        rest = pattern.sub("", text).rstrip("\n")
+        self.changes.append(
+            ("AGENTS.md", "bytes", (rest + "\n").encode())
+            if rest.strip()
+            else ("AGENTS.md", "remove", None)
+        )
 
     def apply(self, dry_run):
         self.retire()
@@ -608,8 +637,8 @@ def plan(
     if profile == "work":
         rules += "\n" + (repo / "agents/work.md").read_text(encoding="utf-8")
     rules += overlay_rules(overlay, f"{profile}.md")
-    for relative in ("AGENTS.md", ".codex/AGENTS.md"):
-        installer.block(relative, rules, markdown=True)
+    installer.block(".codex/AGENTS.md", rules, markdown=True)
+    installer.retire_home_agents()
     # Claude-only mechanics (its tools, hooks, permission modes) stay out of
     # the harness-neutral files above.
     claude_rules = rules + overlay_rules(overlay, f"{profile}.claude.md")

@@ -169,6 +169,9 @@ The linker records installed files and managed blocks in
 `~/.config/dotfiles/state.json`. Before replacing a file it saves its previous
 contents under `~/.config/dotfiles/backups/`. Unix config symlinks load other
 updates from this checkout immediately; Windows copies refresh when relinked.
+Agent rules go to `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, and
+`~/.copilot/copilot-instructions.md`. The linker removes the managed block that
+earlier versions wrote to `~/AGENTS.md`, keeping any other text in that file.
 
 To change a previously installed `home` profile to `work`, use this repository
 with `--profile work`. The linker removes
