@@ -142,9 +142,20 @@ The profile resolves from `--profile`, then `DOTFILES_ENV`, then `~/.dotfiles-en
 There is no default. Invalid or absent choices stop before configuration writes.
 `--dry-run` validates conflicts and prints planned changes without writing files.
 
-Rerun the linker after updating this checkout. It records installed files and
-managed blocks in `~/.config/dotfiles/state.json`. Before replacing a file it saves
-its previous contents under `~/.config/dotfiles/backups/`. Unix config symlinks load
+To pick up changes, pull this checkout and rerun the linker with your profile:
+
+```sh
+git pull
+./link.sh --profile work
+```
+
+On Windows, run `git pull` and then `.\link.ps1 -Profile work`. Both steps are
+needed on every platform: the agent rule files (`CLAUDE.md`, `AGENTS.md`,
+`copilot-instructions.md`) are generated, so a pull alone leaves them unchanged.
+
+The linker records installed files and managed blocks in
+`~/.config/dotfiles/state.json`. Before replacing a file it saves its previous
+contents under `~/.config/dotfiles/backups/`. Unix config symlinks load other
 updates from this checkout immediately; Windows copies refresh when relinked.
 
 To change a previously installed `home` profile to `work`, use this repository
