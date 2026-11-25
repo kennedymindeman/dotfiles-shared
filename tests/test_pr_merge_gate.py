@@ -39,6 +39,10 @@ printf '%s\\036' "$PWD" "$@" >> "$GH_STUB_ARGS"
 printf '\\035' >> "$GH_STUB_ARGS"
 case "$1 $2" in
   "api repos/"*"/pulls/"*)
+    case "$*" in *additions*)
+      [ "$GH_STUB_SIZE" = FAIL ] && { echo "HTTP 502" >&2; exit 1; }
+      printf '%s\\n' "${GH_STUB_SIZE-10 1}"; exit 0 ;;
+    esac
     [ "$GH_STUB_VIEW" = FAIL ] && { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
     [ "$GH_STUB_VIEW" = RATE ] && { echo "gh: API rate limit exceeded (HTTP 403)" >&2; exit 1; }
     [ -n "${GH_STUB_VIEW_OUT+set}" ] && { printf '%s' "$GH_STUB_VIEW_OUT"; exit 0; }
@@ -400,6 +404,56 @@ class PrMergeGateTests(unittest.TestCase):
             comments=f"Blind review: pass {OLD_SHA}\nnote\n{VERDICT}\n",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_self_review_verdict_counts_only_for_a_small_pr(self):
+        merge = f"gh pr merge 8 -R {REPO}{PIN}"
+        self_verdict = f"Self review: pass {SHA}\n"
+        for size in ("10 1", "80 5", "0 0"):
+            with self.subTest(size=size):
+                result = self.run_hook(
+                    merge, comments=self_verdict, env_extra={"GH_STUB_SIZE": size}
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        for size in ("81 1", "10 6", "9999999 1", "1 9999999"):
+            with self.subTest(size=size):
+                result = self.run_hook(
+                    merge, comments=self_verdict, env_extra={"GH_STUB_SIZE": size}
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("A self review covers at most 80", result.stderr)
+                self.assertIn(f"\n  {VERDICT}\n", result.stderr)
+        # An unreadable size refuses.
+        for size in ("FAIL", "", "10", "10 1 2", "x 1", "-1 1", "null 1"):
+            with self.subTest(unreadable=size):
+                result = self.run_hook(
+                    merge, comments=self_verdict, env_extra={"GH_STUB_SIZE": size}
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("couldn't read the size", result.stderr)
+
+    def test_self_review_verdict_must_name_the_head(self):
+        merge = f"gh pr merge 8 -R {REPO}{PIN}"
+        for comments in (
+            f"Self review: pass {OLD_SHA}\n",
+            f"self review: pass {SHA}\n",
+            f"Self review: pass {SHA[:12]}\n",
+            f"note\nSelf review: fail {SHA}\n",
+        ):
+            with self.subTest(comments=comments):
+                result = self.run_hook(merge, comments=comments)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("no blind-review verdict", result.stderr)
+                self.assertEqual(len(self.pr_lookups()), 1)
+                self.log.unlink()
+
+    def test_blind_verdict_needs_no_size_lookup(self):
+        result = self.run_hook(
+            f"gh pr merge 8 -R {REPO}{PIN}",
+            comments=f"Self review: pass {SHA}\n{VERDICT}\n",
+            env_extra={"GH_STUB_SIZE": "5000 90"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.pr_lookups()), 1)
 
     def test_no_checks_at_all_passes(self):
         result = self.run_hook(
