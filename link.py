@@ -566,7 +566,7 @@ def relink_hooks(repo, overlay, platform, recorded):
         if checkout != repo and repo.is_relative_to(checkout):
             inner = repo.relative_to(checkout).as_posix()
             entry = subprocess.run(
-                ["git", "-C", str(checkout), "ls-files", "--stage", "--", inner],
+                ["git", "--literal-pathspecs", "-C", str(checkout), "ls-files", "--stage", "--", inner],
                 capture_output=True, text=True, env=git_env, check=False,
             ).stdout
             if entry.startswith("160000 "):
@@ -577,7 +577,7 @@ def relink_hooks(repo, overlay, platform, recorded):
                 hook += (
                     "(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\n"
                     f" git -C {sub} symbolic-ref -q HEAD >/dev/null ||\n"
-                    f" git -C {top} submodule update --init -- {shlex.quote(inner)}) || echo "
+                    f" git --literal-pathspecs -C {top} submodule update --init -- {shlex.quote(inner)}) || echo "
                     + shlex.quote(f"dotfiles: could not update {inner}; relinking with the copy on disk")
                     + " >&2\n"
                 )

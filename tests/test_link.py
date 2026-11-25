@@ -1004,7 +1004,8 @@ class LinkTests(unittest.TestCase):
         git("submodule", "add", "-q", str(upstream), "shared", cwd=overlay)
         git("add", ".", cwd=overlay)
         git("commit", "-qm", "overlay", cwd=overlay)
-        self.overlay = self.base / "overlay-clone"
+        # The name checks that the hook quotes its paths.
+        self.overlay = self.base / "overlay $(clone)"
         git("clone", "-q", "--recurse-submodules", str(overlay), str(self.overlay), cwd=self.base)
         self.repo = self.overlay / "shared"
         result = self.link("--profile", "home", "--overlay", str(self.overlay))
@@ -1023,6 +1024,36 @@ class LinkTests(unittest.TestCase):
         git = self.overlay_with_submodule()
         git("pull", "-q", cwd=self.overlay)
         self.assertIn("Use small changes.", (self.home / ".claude/CLAUDE.md").read_text())
+
+    @unittest.skipIf(
+        os.name == "nt",
+        "pwsh takes $PROFILE from the real Documents folder, outside a temp home",
+    )
+    def test_overlay_pull_relinks_with_submodule_recursion_on(self):
+        git = self.overlay_with_submodule()
+        git("config", "submodule.recurse", "true", cwd=self.overlay)
+        git("pull", "-q", cwd=self.overlay)
+        self.assertIn("Use small changes.", (self.home / ".claude/CLAUDE.md").read_text())
+
+    def test_overlay_pull_keeps_uncommitted_work_and_still_relinks(self):
+        git = self.overlay_with_submodule()
+        # The same file changed upstream, so the submodule update refuses.
+        self.write(self.repo / "agents/core.md", "Local edit.\n")
+        result = git("pull", "-q", cwd=self.overlay)
+        self.assertIn("could not update shared", result.stderr)
+        self.assertEqual((self.repo / "agents/core.md").read_text(), "Local edit.\n")
+        if os.name != "nt":
+            self.assertIn("Local edit.", (self.home / ".claude/CLAUDE.md").read_text())
+
+    def test_hook_gains_the_submodule_step_on_the_next_link(self):
+        git = self.overlay_with_submodule()
+        hook = self.overlay / ".git/hooks/post-merge"
+        git("rm", "-q", "--cached", "shared", cwd=self.overlay)
+        self.assertEqual(self.link().returncode, 0)
+        self.assertNotIn("submodule update", hook.read_text())
+        git("reset", "-q", cwd=self.overlay)
+        self.assertEqual(self.link().returncode, 0)
+        self.assertIn("submodule update", hook.read_text())
 
     def test_overlay_pull_leaves_a_submodule_on_a_branch_alone(self):
         git = self.overlay_with_submodule()
