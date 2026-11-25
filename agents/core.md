@@ -40,7 +40,7 @@ Write like you are talking to a colleague across a desk: concrete names, everyda
 Size each new request yourself, including one that arrives mid-session.
 - One-shot change, or one I've specified precisely: build it, with no planning step and no announcement.
 - Open decisions you can settle with a justified default (Decide by default): settle them, build, and list each decision in one line in the final reply.
-- Open decisions about what I'll see or how it behaves, where a wrong guess costs a rebuild (a new project, a feature I've only sketched): say so in one line, then ask everything you can in one round, recommendation first, and look up facts yourself. Build once I've answered.
+- Open decisions about what I'll see or how it behaves, where a wrong guess costs a rebuild (a new project, a feature I've only sketched): say so in one line, then ask once (Clarify intent), recommendation first, and look up facts yourself. Build once I've answered.
 
 # Decide by default
 Once the work is planned, apply a well-justified recommendation and record the decision with one line of why; a reasonable solution beats a queue of questions. Ask only when a step needs my hands (sudo, accounts, credentials, money, a device), a fact only I have, or a destructive step with no safe default: deleting data, force-pushing, or a hard-to-undo change outside this repository. Reversible steps (creating a directory, reading a file) need no question.
