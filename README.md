@@ -146,7 +146,10 @@ Invalid or absent choices stop before configuration writes. A rerun without
 
 To pick up changes, pull; the hook relinks. The linker installs a `post-merge`
 Git hook in this checkout, and in the overlay when it is a Git checkout, that
-reruns the linker with the recorded profile and overlay. The hook never fails
+reruns the linker with the recorded profile and overlay. When the overlay holds
+this checkout as a submodule, the overlay's hook first updates the submodule to
+the commit the overlay records. It leaves a submodule that is on a branch
+alone; relink by hand after you finish there. The hook never fails
 the pull: on a linker error it prints the error and the command to rerun. The
 linker leaves an existing hook in place and prints a warning when it did not
 write that hook, when the hook was edited after a link, or when it is a symlink.
