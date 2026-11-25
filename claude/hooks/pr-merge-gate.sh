@@ -9,7 +9,9 @@
 #      line is exactly
 #        Blind review: pass <full 40-character head commit SHA>
 #      A verdict naming an older commit doesn't count, unless the only change
-#      from it to the head is deleting files under .pr-assets/.
+#      from it to the head is deleting files under .pr-assets/. A PR that
+#      changes at most 80 lines in at most 5 files may carry instead
+#        Self review: pass <full 40-character head commit SHA>
 # The merge must also carry --match-head-commit <that head SHA>, so GitHub
 # refuses it if the head moves after these checks. With --delete-branch, no
 # other open PR may have this PR's head branch as its base.
@@ -487,6 +489,8 @@ fi
 # the repo's owner, a member, or a collaborator, since anyone can comment on a
 # public repo.
 verdict="Blind review: pass $sha"
+SELF_LINES=80
+SELF_FILES=5
 # per_page=100, the maximum, so a long thread costs as few requests as possible.
 firsts=$(gh api "repos/$owner/$name/issues/$num/comments?per_page=100" --paginate \
   -q '.[] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
@@ -509,11 +513,36 @@ if [ -z "$covered" ]; then
         and (.filename | startswith(".pr-assets/"))))' >/dev/null 2>&1 && { covered=$old; break; }
   done
 fi
+# A self-review verdict for the head counts when the PR is small: GitHub's own
+# count of its added plus deleted lines and of its changed files, each within
+# the limit. The pin below ties the merge to the head these counts describe.
+selfverdict="Self review: pass $sha"
+if [ -z "$covered" ] && printf '%s\n' "$firsts" | grep -Fxq "$selfverdict"; then
+  size=$(gh api "repos/$owner/$name/pulls/$num" \
+    -q 'if ([.additions, .deletions, .changed_files] | all(type == "number"))
+        then "\(.head.sha) \(.additions + .deletions) \(.changed_files)" else "unreadable" end' 2>&1) \
+    || cantread "size" "$owner/$name#$num" "$size"
+  # The counts must describe the head checked above, not one pushed since.
+  set -f; set -- $size; set +f
+  [ $# -eq 3 ] && [ "$1" = "$sha" ] || cantread "size" "$owner/$name#$num at $sha" "$size"
+  shift
+  case "$1$2" in *[!0123456789]*) cantread "size" "$owner/$name#$num" "$size" ;; esac
+  if [ ${#1} -le 6 ] && [ ${#2} -le 6 ] && [ "$1" -le $SELF_LINES ] && [ "$2" -le $SELF_FILES ]; then
+    covered=$sha
+  else
+    block "$owner/$name#$num has a self-review verdict, but it changes $1 lines in $2 files. A self review covers at most $SELF_LINES changed lines in $SELF_FILES files.
+After a blind review of this commit passes, post a PR comment whose first line is exactly:
+  $verdict"
+  fi
+fi
 [ -n "$covered" ] || block "$owner/$name#$num has no blind-review verdict for its head commit $sha.
 After a blind review of this commit passes, post a PR comment (as the repo's
 owner, a member, or a collaborator) whose first line is exactly:
   $verdict
 for example: gh pr comment $num -R $owner/$name --body-file <file>
+A PR that changes at most $SELF_LINES lines in $SELF_FILES files may instead carry, after you
+have read its whole diff, the first line:
+  $selfverdict
 A verdict for an older commit doesn't count: a new commit needs a new review,
 unless the only change since it is deleting files under .pr-assets/."
 
