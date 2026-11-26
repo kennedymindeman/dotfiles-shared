@@ -495,7 +495,7 @@ def merge_tables(base, extra):
 
 
 def toml_key(key):
-    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else json.dumps(key, ensure_ascii=False)
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else toml_value(key)
 
 
 def toml_value(value):
