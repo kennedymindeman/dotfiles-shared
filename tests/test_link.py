@@ -855,6 +855,8 @@ class LinkTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.apply("home", self.overlay)
         self.assertEqual(native.read_text(encoding="utf-8"), "onboarding = false\n")
+        # Replace rather than write through: on Unix this target is a symlink into the repo.
+        (self.home / ".config/shared.txt").unlink()
         self.write(self.home / ".config/shared.txt", "locally customized")
         with self.assertRaisesRegex(ValueError, "unowned"):
             self.apply("home", self.overlay)
