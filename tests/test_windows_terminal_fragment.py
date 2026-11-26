@@ -29,8 +29,10 @@ class WindowsTerminalFragmentTests(unittest.TestCase):
         self.assertTrue(fragment["profiles"])
         for profile in fragment["profiles"]:
             # A guid or name would make this a new profile, not an update.
-            self.assertEqual(profile.keys(), {"updates", "colorScheme"})
+            self.assertEqual(profile.keys(), {"updates", "colorScheme", "padding"})
             self.assertIn(profile["colorScheme"], names)
+            # No blank border around the text.
+            self.assertEqual(profile["padding"], "0")
 
 
 if __name__ == "__main__":
