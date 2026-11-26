@@ -1,0 +1,38 @@
+onboarding = false
+
+[theme]
+# Herdr's built-in "catppuccin" is Mocha; the custom colors pin the
+# Catppuccin-named tokens to the official Mocha palette.
+name = "catppuccin"
+
+[theme.custom]
+surface0 = "#313244"
+surface1 = "#45475a"
+overlay0 = "#6c7086"
+overlay1 = "#7f849c"
+text = "#cdd6f4"
+subtext0 = "#a6adc8"
+mauve = "#cba6f7"
+green = "#a6e3a1"
+yellow = "#f9e2af"
+red = "#f38ba8"
+blue = "#89b4fa"
+teal = "#94e2d5"
+peach = "#fab387"
+
+[keys]
+last_pane = "prefix+shift+o"
+
+[ui]
+# Herdr clamps sidebar_width to sidebar_max_width (36 by default).
+sidebar_width = 44
+sidebar_max_width = 44
+agent_panel_sort = "spaces"
+
+[ui.toast]
+delivery = "system"
+
+[ui.sidebar.agents]
+# First line: the session's topic (an agent's terminal title). Second line:
+# the summary an agent reports with `herdr pane report-metadata --token summary=...`.
+rows = [["state_icon", "terminal_title_stripped"], [{ token = "$summary", dim = true }]]

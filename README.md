@@ -234,6 +234,7 @@ These optional files load after the shared configuration; `<profile>` is exactly
 | `zshrc.<profile>`, `bashrc.<profile>` | Sourced after the corresponding shared shell setup on Unix |
 | `tmux.<profile>.conf` | Sourced after shared tmux on Unix |
 | `powershell/profile.<profile>.ps1` | Sourced after shared PowerShell setup on Windows |
+| `herdr.<profile>.toml` | Merged into shared `herdr/config.toml` (overlay tables extend, other values replace), e.g. `terminal.default_shell` and `[[keys.command]]`; herdr has no include |
 | `copilot/subagents.json` | Merged subagent fields; unchanged owned fields removed when no longer configured |
 | `copilot/sensitive.json` | Extra secrets for Copilot, e.g. `{"env": ["EXAMPLE_TOKEN"], "paths": [".config/example"]}`; `env` names join `--secret-env-vars`, home-relative `/`-separated `paths` join the sandbox deny list and launch refusal; invalid files fail linking and refuse launch |
 
