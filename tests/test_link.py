@@ -814,6 +814,51 @@ class LinkTests(unittest.TestCase):
         ) / "herdr/config.toml"
         self.assertEqual(native.read_bytes(), (self.repo / "herdr/config.toml").read_bytes())
 
+    def test_herdr_os_overlay_applies_after_profile_overlay(self):
+        self.write(self.overlay / "herdr.home.toml", '[ui.toast]\ndelivery = "system"\n')
+        self.write(self.overlay / "herdr.home.darwin.toml", (
+            '[ui.toast]\ndelivery = "terminal"\n\n[ui.sound]\nenabled = true\n'
+        ))
+        _, config = self.herdr_plan("darwin", self.overlay)
+        self.assertEqual(config["ui"]["toast"]["delivery"], "terminal")
+        self.assertIs(config["ui"]["sound"]["enabled"], True)
+        _, config = self.herdr_plan("windows", self.overlay)
+        self.assertEqual(config["ui"]["toast"]["delivery"], "system")
+
+    def test_herdr_overlay_syntax_error_names_the_file(self):
+        self.write(self.overlay / "herdr.home.toml", "[ui\n")
+        with self.assertRaisesRegex(ValueError, "herdr\\.home\\.toml"):
+            self.herdr_plan("linux", self.overlay)
+
+    def test_herdr_overlay_delete_character_stays_valid_toml(self):
+        self.write(self.overlay / "herdr.home.toml", '[terminal]\ndefault_shell = "a\\u007fb"\n')
+        _, config = self.herdr_plan("linux", self.overlay)
+        self.assertEqual(config["terminal"]["default_shell"], "a\x7fb")
+
+    def test_herdr_self_edit_skips_only_herdr(self):
+        self.apply("home")
+        native = self.home / (
+            "AppData/Roaming" if os.name == "nt" else ".config"
+        ) / "herdr/config.toml"
+        # herdr rewrites its config from its Settings screen.
+        self.write(native, "onboarding = false\n")
+        self.write(self.overlay / "profiles/home.json", json.dumps(
+            {"files": {".config/private.txt": "private.txt", ".config/new.txt": "private.txt"}}
+        ))
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.apply("home", self.overlay)
+        self.assertIn(f"warning: keeping {native}", stderr.getvalue())
+        self.assertEqual(native.read_text(encoding="utf-8"), "onboarding = false\n")
+        self.assertTrue((self.home / ".config/new.txt").is_file())
+        # Still unowned on the next link, and other files keep blocking.
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.apply("home", self.overlay)
+        self.assertEqual(native.read_text(encoding="utf-8"), "onboarding = false\n")
+        self.write(self.home / ".config/shared.txt", "locally customized")
+        with self.assertRaisesRegex(ValueError, "unowned"):
+            self.apply("home", self.overlay)
+
     def test_readonly_blocks_before_writes(self):
         target = self.home / ".gitconfig"
         self.write(target, "# read only\n")

@@ -153,8 +153,9 @@ class Installer:
             path.resolve() == (root / source).resolve() for root in roots
         )
 
-    def file(self, relative, source, root=None, data=None):
-        """Install source; with data, write those bytes as an owned copy instead."""
+    def file(self, relative, source, root=None, data=None, skip_unowned=False):
+        """Install source; with data, write those bytes as an owned copy instead.
+        With skip_unowned, warn and keep an unowned or changed file instead of stopping."""
         path = self.target(relative)
         for name in (
             ".dotfiles-env", ".config/dotfiles/state.json", ".copilot/settings.json",
@@ -185,6 +186,16 @@ class Installer:
             and not self.owned(relative, path)
             and not self.legacy_link(path, source)
         ):
+            if skip_unowned:
+                # Keep the old record so a profile switch doesn't flag the file.
+                if relative in self.old["files"]:
+                    self.records[relative] = self.old["files"][relative]
+                print(
+                    f"warning: keeping {path}, which dotfiles did not write or which "
+                    "changed since; move it aside after review and rerun to replace it",
+                    file=sys.stderr,
+                )
+                return
             raise ValueError(
                 f"preserving unowned configuration: {path}; move it aside after review and rerun"
             )
@@ -493,8 +504,8 @@ def toml_value(value):
     if isinstance(value, (int, float)):
         return repr(value)
     if isinstance(value, str):
-        # JSON string escapes are valid in TOML basic strings.
-        return json.dumps(value, ensure_ascii=False)
+        # JSON string escapes are valid in TOML basic strings; TOML also forbids a raw DEL.
+        return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
     if isinstance(value, list):
         return "[" + ", ".join(toml_value(item) for item in value) + "]"
     if isinstance(value, dict):
@@ -524,18 +535,28 @@ def toml_dump(table, path=()):
     return "\n".join(lines).strip("\n")
 
 
-def herdr_config(repo, overlay, profile):
-    """Return shared herdr config bytes, merged with the overlay's herdr.<profile>.toml."""
+def herdr_config(repo, overlay, profile, platform):
+    """Return shared herdr config bytes, merged with the overlay's
+    herdr.<profile>.toml and then herdr.<profile>.<platform>.toml."""
     import tomllib
 
     shared = (repo / "herdr/config.toml").read_bytes()
-    extra = overlay / f"herdr.{profile}.toml" if overlay else None
-    if not extra or not extra.is_file():
+    extras = [
+        path
+        for path in (
+            overlay / f"herdr.{profile}.toml",
+            overlay / f"herdr.{profile}.{platform}.toml",
+        )
+        if path.is_file()
+    ] if overlay else []
+    if not extras:
         return shared
-    merged = merge_tables(
-        tomllib.loads(shared.decode("utf-8")),
-        tomllib.loads(extra.read_text(encoding="utf-8")),
-    )
+    merged = tomllib.loads(shared.decode("utf-8"))
+    for extra in extras:
+        try:
+            merged = merge_tables(merged, tomllib.loads(extra.read_text(encoding="utf-8")))
+        except tomllib.TOMLDecodeError as error:
+            raise ValueError(f"invalid TOML in {extra}: {error}") from error
     return (toml_dump(merged) + "\n").encode()
 
 
@@ -716,13 +737,15 @@ def plan(
     for relative, source in configured_files(repo, platform).items():
         installer.file(relative, source)
     # Herdr reads %APPDATA%\herdr on Windows and ~/.config/herdr elsewhere. It
-    # writes its own config from Settings, so this is always a copy, never a link.
+    # writes its own config from Settings, so this is always a copy, never a link,
+    # and a config herdr rewrote skips only herdr instead of stopping the link.
     installer.file(
         "AppData/Roaming/herdr/config.toml"
         if platform == "windows"
         else ".config/herdr/config.toml",
         "herdr/config.toml",
-        data=herdr_config(repo, overlay, profile),
+        data=herdr_config(repo, overlay, profile, platform),
+        skip_unowned=True,
     )
     git = "[include]\n\tpath = " + json.dumps(
         str(repo / "gitconfig").replace(chr(92), "/")
