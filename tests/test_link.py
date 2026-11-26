@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +43,7 @@ class LinkTests(unittest.TestCase):
             "copilot/shell-defaults.sh": "# shared launcher\n",
             "powershell/Microsoft.PowerShell_profile.ps1": "# shared shell\n",
             "tmux.conf": "# shared tmux\n",
+            "herdr/config.toml": (ROOT / "herdr/config.toml").read_text(encoding="utf-8"),
         }.items():
             self.write(self.repo / name, content)
         self.write(
@@ -743,6 +745,74 @@ class LinkTests(unittest.TestCase):
         self.apply("work")
         result = subprocess.run(command, env=environment, capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), "work||")
+
+    def herdr_plan(self, platform, overlay=None, profile="home"):
+        """Plan a link for platform and return its herdr target and parsed config."""
+        # Copilot settings validate home paths for the target OS, which this
+        # host's temporary paths fail on the other OS; stub them for the plan.
+        settings = self.repo / "bin/apply-copilot-settings.py"
+        real = settings.read_text()
+        self.write(settings, (
+            "def build_settings(*args, **kwargs):\n    return {'footer': {}}\n"
+            "def load_sensitive(path):\n    return {'paths': []}\n"
+        ))
+        try:
+            installer = link.plan(
+                self.repo, self.home, profile, platform, overlay,
+                str(self.home / "Documents/PowerShell/profile.ps1"),
+            )
+        finally:
+            self.write(settings, real)
+        [(relative, data)] = [
+            (r, v) for r, action, v in installer.changes if r.endswith("herdr/config.toml")
+        ]
+        self.assertEqual(installer.records[relative], {"sha256": link.digest(data)})
+        return relative, tomllib.loads(data.decode())
+
+    def test_fresh_herdr_config_is_themed_on_windows_and_linux(self):
+        for platform, expected in (
+            ("windows", "AppData/Roaming/herdr/config.toml"),
+            ("linux", ".config/herdr/config.toml"),
+        ):
+            relative, config = self.herdr_plan(platform)
+            self.assertEqual(relative, expected)
+            self.assertEqual(config["theme"]["name"], "catppuccin")
+            self.assertEqual(config["theme"]["custom"]["mauve"], "#cba6f7")
+            self.assertEqual(config["keys"]["last_pane"], "prefix+shift+o")
+            self.assertFalse(config["onboarding"])
+        self.apply("home")
+        native = self.home / (
+            "AppData/Roaming" if os.name == "nt" else ".config"
+        ) / "herdr/config.toml"
+        self.assertFalse(native.is_symlink())
+        self.assertEqual(native.read_bytes(), (self.repo / "herdr/config.toml").read_bytes())
+
+    def test_herdr_overlay_adds_shell_and_keys(self):
+        self.write(self.overlay / "herdr.home.toml", (
+            '[terminal]\ndefault_shell = "example-shell"\n\n'
+            '[keys]\nnext_agent = "prefix+a"\n\n'
+            '[[keys.command]]\nkey = "prefix+alt+g"\ntype = "popup"\n'
+            'command = "example \\"tool\\""\n'
+        ))
+        for platform in ("windows", "linux"):
+            _, config = self.herdr_plan(platform, self.overlay)
+            self.assertEqual(config["terminal"]["default_shell"], "example-shell")
+            self.assertEqual(config["keys"]["next_agent"], "prefix+a")
+            self.assertEqual(config["keys"]["last_pane"], "prefix+shift+o")
+            self.assertEqual(config["keys"]["command"][0]["command"], 'example "tool"')
+            shared = tomllib.loads((self.repo / "herdr/config.toml").read_text())
+            self.assertEqual(config["ui"], shared["ui"])
+            self.assertEqual(config["theme"], shared["theme"])
+        # The overlay's file is still the installer's to replace and remove.
+        self.apply("home", self.overlay)
+        before = self.snapshot()
+        self.apply("home", self.overlay)
+        self.assertEqual(before, self.snapshot())
+        self.apply("home")
+        native = self.home / (
+            "AppData/Roaming" if os.name == "nt" else ".config"
+        ) / "herdr/config.toml"
+        self.assertEqual(native.read_bytes(), (self.repo / "herdr/config.toml").read_bytes())
 
     def test_readonly_blocks_before_writes(self):
         target = self.home / ".gitconfig"

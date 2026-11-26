@@ -153,7 +153,8 @@ class Installer:
             path.resolve() == (root / source).resolve() for root in roots
         )
 
-    def file(self, relative, source, root=None):
+    def file(self, relative, source, root=None, data=None):
+        """Install source; with data, write those bytes as an owned copy instead."""
         path = self.target(relative)
         for name in (
             ".dotfiles-env", ".config/dotfiles/state.json", ".copilot/settings.json",
@@ -165,19 +166,18 @@ class Installer:
         source_path = (root or self.repo) / source
         if not source_path.exists():
             raise ValueError(f"missing configured source: {source_path}")
-        use_link = self.platform != "windows"
-        record = (
-            {"link": str(source_path)}
-            if use_link
-            else {"sha256": digest(source_path.read_bytes())}
-        )
+        generated = data is not None
+        use_link = self.platform != "windows" and not generated
+        if not generated and not use_link:
+            data = source_path.read_bytes()
+        record = {"link": str(source_path)} if use_link else {"sha256": digest(data)}
         exists = path.exists() or path.is_symlink()
         identical = (
             path.is_symlink() and os.readlink(path) == str(source_path)
             if use_link
             else path.is_file()
             and not path.is_symlink()
-            and path.read_bytes() == source_path.read_bytes()
+            and path.read_bytes() == data
         )
         if (
             exists
@@ -190,7 +190,11 @@ class Installer:
             )
         self.records[relative] = record
         if not identical:
-            self.changes.append((relative, "link" if use_link else "copy", source_path))
+            self.changes.append(
+                (relative, "bytes", data)
+                if generated
+                else (relative, "link" if use_link else "copy", source_path)
+            )
 
     def block(self, relative, content, markdown=False, legacy_source=None, lua=False):
         path = self.target(relative)
@@ -469,6 +473,72 @@ def overlay_rules(overlay, name):
     return "\n" + path.read_text(encoding="utf-8") if path and path.is_file() else ""
 
 
+def merge_tables(base, extra):
+    """Merge TOML tables recursively; any other overlay value replaces the shared one."""
+    merged = dict(base)
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            value = merge_tables(merged[key], value)
+        merged[key] = value
+    return merged
+
+
+def toml_key(key):
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else json.dumps(key, ensure_ascii=False)
+
+
+def toml_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        # JSON string escapes are valid in TOML basic strings.
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_value(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(
+            f"{toml_key(k)} = {toml_value(v)}" for k, v in value.items()
+        ) + " }"
+    raise ValueError(f"unsupported TOML value: {value!r}")
+
+
+def toml_dump(table, path=()):
+    """Write what tomllib read back as TOML: herdr's config has no include."""
+    is_table_list = lambda v: isinstance(v, list) and v and all(isinstance(i, dict) for i in v)
+    lines = [
+        f"{toml_key(k)} = {toml_value(v)}"
+        for k, v in table.items()
+        if not isinstance(v, dict) and not is_table_list(v)
+    ]
+    for key, value in table.items():
+        name = ".".join(toml_key(part) for part in (*path, key))
+        if isinstance(value, dict):
+            body = toml_dump(value, (*path, key))
+            # A table holding only subtables needs no header of its own.
+            lines += ["", body] if body.startswith("[") else ["", f"[{name}]", body]
+        elif is_table_list(value):
+            for item in value:
+                lines += ["", f"[[{name}]]", toml_dump(item, (*path, key))]
+    return "\n".join(lines).strip("\n")
+
+
+def herdr_config(repo, overlay, profile):
+    """Return shared herdr config bytes, merged with the overlay's herdr.<profile>.toml."""
+    import tomllib
+
+    shared = (repo / "herdr/config.toml").read_bytes()
+    extra = overlay / f"herdr.{profile}.toml" if overlay else None
+    if not extra or not extra.is_file():
+        return shared
+    merged = merge_tables(
+        tomllib.loads(shared.decode("utf-8")),
+        tomllib.loads(extra.read_text(encoding="utf-8")),
+    )
+    return (toml_dump(merged) + "\n").encode()
+
+
 def check_home_integrations(installer, powershell_profile=None):
     """Review external registrations when leaving home or changing overlays."""
     leaving_home = installer.profile == "work" and installer.old.get("profile") == "home"
@@ -645,6 +715,15 @@ def plan(
         )
     for relative, source in configured_files(repo, platform).items():
         installer.file(relative, source)
+    # Herdr reads %APPDATA%\herdr on Windows and ~/.config/herdr elsewhere. It
+    # writes its own config from Settings, so this is always a copy, never a link.
+    installer.file(
+        "AppData/Roaming/herdr/config.toml"
+        if platform == "windows"
+        else ".config/herdr/config.toml",
+        "herdr/config.toml",
+        data=herdr_config(repo, overlay, profile),
+    )
     git = "[include]\n\tpath = " + json.dumps(
         str(repo / "gitconfig").replace(chr(92), "/")
     )
