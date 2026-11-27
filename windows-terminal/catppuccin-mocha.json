@@ -28,17 +28,23 @@
     {
       "updates": "{574e775e-4f2a-5b96-ac1e-a2962a402336}",
       "colorScheme": "Catppuccin Mocha",
-      "padding": "0"
+      "padding": "0",
+      "scrollbarState": "hidden",
+      "font": { "face": "JetBrainsMono Nerd Font" }
     },
     {
       "updates": "{61c54bbd-c2c6-5271-96e7-009a87ff44bf}",
       "colorScheme": "Catppuccin Mocha",
-      "padding": "0"
+      "padding": "0",
+      "scrollbarState": "hidden",
+      "font": { "face": "JetBrainsMono Nerd Font" }
     },
     {
       "updates": "{0caa0dad-35be-5f56-a8ff-afceeeaa6101}",
       "colorScheme": "Catppuccin Mocha",
-      "padding": "0"
+      "padding": "0",
+      "scrollbarState": "hidden",
+      "font": { "face": "JetBrainsMono Nerd Font" }
     }
   ]
 }
