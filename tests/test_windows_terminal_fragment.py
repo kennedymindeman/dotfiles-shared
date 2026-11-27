@@ -29,10 +29,16 @@ class WindowsTerminalFragmentTests(unittest.TestCase):
         self.assertTrue(fragment["profiles"])
         for profile in fragment["profiles"]:
             # A guid or name would make this a new profile, not an update.
-            self.assertEqual(profile.keys(), {"updates", "colorScheme", "padding"})
+            self.assertEqual(
+                profile.keys(),
+                {"updates", "colorScheme", "padding", "scrollbarState", "font"},
+            )
             self.assertIn(profile["colorScheme"], names)
-            # No blank border around the text.
+            # No blank border or scrollbar strip around the text.
             self.assertEqual(profile["padding"], "0")
+            self.assertEqual(profile["scrollbarState"], "hidden")
+            # Starship prompt icons need a Nerd Font.
+            self.assertEqual(profile["font"], {"face": "JetBrainsMono Nerd Font"})
 
 
 if __name__ == "__main__":
